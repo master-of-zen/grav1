@@ -28,11 +28,11 @@ def tmp_file(mode, content, suffix=""):
   finally:
     os.unlink(tmp_name)
 
-def aom_encode(input, encoder_params, status_cb):
+def aom_encode(input, encoder_params, args, status_cb):
   output_filename = f"{input}.ivf"
 
   ffmpeg = f"ffmpeg -y -hide_banner -loglevel error -i {input} -strict -1 -pix_fmt yuv420p -f yuv4mpegpipe -".split(" ")
-  aom = f"aomenc - --fpf={input}.log --threads=4 {encoder_params}".split(" ")
+  aom = f"aomenc - --fpf={input}.log --threads={args.threads} {encoder_params}".split(" ")
 
   aom.append("--passes=2")
   passes = [aom + cmd for cmd in [
@@ -79,11 +79,11 @@ def aom_encode(input, encoder_params, status_cb):
     pipe.kill()
     raise e
 
-def client(host, vmaf_path, status_cb):
+def client(args, status_cb):
   while True:
     try:
       status_cb("downloading")
-      r = requests.get(host + "/get_job")
+      r = requests.get(args.target + "/get_job")
       if r.status_code == 404:
         status_cb("finished")
         return
@@ -100,16 +100,16 @@ def client(host, vmaf_path, status_cb):
       status_cb("finished")
       return
 
-    if len(vmaf_path) > 0:
-      job.encoder_params = f"{job.encoder_params} --vmaf-model-path={vmaf_path}"
+    if len(args.vmaf_path) > 0:
+      job.encoder_params = f"{job.encoder_params} --vmaf-model-path={args.vmaf_path}"
     
     with tmp_file("wb", job.content, job.filename) as file:
-      output = aom_encode(file, job.encoder_params, status_cb)
+      output = aom_encode(file, job.encoder_params, args, status_cb)
       if output:
         status_cb("uploading")
         with open(output, "rb") as file:
           files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
-          requests.post(host + "/finish_job", data={"id": job.id, "filename": job.filename}, files=files)
+          requests.post(args.target + "/finish_job", data={"id": job.id, "filename": job.filename}, files=files)
 
         while os.path.isfile(output):
           try:
@@ -118,14 +118,15 @@ def client(host, vmaf_path, status_cb):
             print("failed to delete")
             time.sleep(1)
 
-def do(host, i):
+def do(args, i):
   screen(i, "starting")
-  client(host, args.vmaf_path, lambda msg: screen(i, msg))
+  client(args, lambda msg: screen(i, msg))
 
 worker_log = {}
 def screen(i, msg):
   worker_log[i] = msg
 
+# this is kind of cursed
 def window(scr):
   scr.nodelay(1)
   curs_set(0)
@@ -147,7 +148,6 @@ def window(scr):
 
     c = scr.getch()
     if not alive or c == 3:
-      #curses.endwin()
       break
   curs_set(1)
 
@@ -158,6 +158,7 @@ if __name__ == "__main__":
   parser.add_argument("target", type=str, nargs="?", default="http://174.6.71.104:7899")
   parser.add_argument("--vmaf-model-path", dest="vmaf_path", default="vmaf_v0.6.1.pkl" if os.name == "nt" else "")
   parser.add_argument("--workers", dest="workers", default=1)
+  parser.add_argument("--threads", dest="threads", default=4)
 
   args = parser.parse_args()
 
@@ -166,7 +167,7 @@ if __name__ == "__main__":
   workers = []
 
   for i in range(0, int(args.workers)):
-    worker = Thread(target=do, args=(args.target, i,), daemon=True)
+    worker = Thread(target=do, args=(args, i,), daemon=True)
     worker.start()
     workers.append(worker)
     time.sleep(0.1)

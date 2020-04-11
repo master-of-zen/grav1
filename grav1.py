@@ -33,7 +33,7 @@ def time2sec(search):
   return int(search.group(1)) * 60 * 60 + int(search.group(2)) * 60 + int(search.group(3)) + float("." + search.group(4))
 
 def _split(video, timecodes, path_split):
-  os.makedirs("split", exist_ok=True)
+  os.makedirs(path_split, exist_ok=True)
 
   cmd = [
     "ffmpeg", "-y",
@@ -89,11 +89,11 @@ def _split(video, timecodes, path_split):
     print()
     return False
 
-def split(video, path_split):
+def split(video, path_split, threshold=50):
   if os.path.isfile("timecodes"):
     timecodes = open("timecodes", "r").read()
   else:
-    timecodes = _scene_detect("tamayomi.mp4", 40)
+    timecodes = _scene_detect(video, threshold)
     with open("timecodes", "w+") as file:
       file.write(timecodes)
 
@@ -106,9 +106,7 @@ def split(video, path_split):
 def print_progress(n, total, size=20, suffix=""):
   fill = "█" * int((n / total) * size)
   remaining = " " * (size - len(fill))
-  msg = f"{int(100 * n / total):3d}%|{fill}{remaining}| {n}/{total} {suffix}"
-  print(msg, end="\r")
-  return msg
+  return f"{int(100 * n / total):3d}%|{fill}{remaining}| {n}/{total} {suffix}"
 
 def get_frames(input):
   cmd = f"ffmpeg -hide_banner -map 0:v:0 -c copy -f null {os.devnull} -i".split(" ")
@@ -137,17 +135,17 @@ class Job:
     self.completed = False
 
 class Server:
-  def __init__(self, app, video, output, encoder_params):
+  def __init__(self, app, args):
     self.config = type("", (), {})
     self.config.encoder = "aomenc"
-    self.config.encoder_params = encoder_params
-    self.config.path_input = video
-    self.config.path_output = output#f"{self.config.path_input}_av1.webm"
+    self.config.encoder_params = args.encoder_params
+    self.config.path_input = args.video
+    self.config.path_output = args.output if args.output else f"{self.config.path_input}_av1.webm"
 
     self.last_message = ""
 
     self.frames = 0
-    self.total_frames = get_frames(video)
+    self.total_frames = get_frames(args.video)
     
     self.encode_start = None
     self.encoded_frames = 0
@@ -155,11 +153,14 @@ class Server:
     self.jobs = {}
 
     if not os.path.isdir(path_split) or len(os.listdir(path_split)) == 0:
-      split(video, path_split)
+      split(args.video, path_split, args.threshold)
     
     self.scenes = os.listdir(path_split)
 
     self.total_scenes = len(self.scenes)
+
+    if not os.path.isdir(path_encode) or len(os.listdir(path_encode)) == 0:
+      return
 
     print("getting resume data")
 
@@ -189,6 +190,7 @@ class Server:
     else:
       fps = 0
     self.last_message = print_progress(self.frames, self.total_frames, suffix=f"{fps:.2f}fps {len(self.jobs)}/{self.total_scenes} scenes remaining")
+    print(self.last_message, end="\r")
 
   def get_job(self):
     jobs = sorted(self.jobs.values(), key= lambda x: len(x.workers))
@@ -255,6 +257,8 @@ def receive():
   if os.path.isfile(encoded):
     server.print("disc", filename)
     return "already done", 200
+
+  os.makedirs(path_encode, exist_ok=True)
 
   file.save(encoded)
 
@@ -380,10 +384,10 @@ if __name__ == "__main__":
   parser.add_argument("-i", dest="input", default=None)
   parser.add_argument("target", type=str, default=None)
   parser.add_argument("--av1-options", dest="av1_options", type=str, default=
-    "--lag-in-frames=25 --tune=vmaf_with_preprocessing \
-    -b 10 --aq-mode=2 --cpu-used=0 --end-usage=vbr --target-bitrate=22 -w 768 -h 432"
+    "--lag-in-frames=35 \
+    -b 10 --aq-mode=3 --cpu-used=0 --end-usage=vbr --target-bitrate=20 -w 768 -h 432"
   )
-  parser.add_argument("--vmaf-model-path", dest="vmaf_path", default="")
+  parser.add_argument("--vmaf-model-path", dest="vmaf_path", default="vmaf_v0.6.1.pkl" if os.name == "nt" else "")
 
   args = parser.parse_args()
 

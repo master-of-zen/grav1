@@ -142,7 +142,7 @@ class Server:
     self.config.encoder = "aomenc"
     self.config.encoder_params = args.encoder_params
     self.config.path_input = args.input
-    self.config.path_output = args.output if args.output else f"{self.config.path_input}_av1.webm"
+    self.config.path_output = args.target if args.target else f"{self.config.path_input}_av1.webm"
 
     self.last_message = ""
 
@@ -386,7 +386,7 @@ if __name__ == "__main__":
   parser.add_argument("-i", dest="input", default=None)
   parser.add_argument("target", type=str, default=None)
   parser.add_argument("--threshold", type=int, default=50)
-  parser.add_argument("--av1-options", dest="av1_options", type=str, default=
+  parser.add_argument("--av1-options", dest="encoder_params", type=str, default=
     "--lag-in-frames=35 --auto-alt-ref=1 \
     -b 10 --aq-mode=3 --cpu-used=0 --end-usage=vbr --target-bitrate=8 -w 768 -h 432"
   )
@@ -408,7 +408,7 @@ if __name__ == "__main__":
     def _receive():
       return receive()
 
-    server = Server(app, args.input, args.target, args.av1_options)
+    server = Server(app, args)
     if server:
       server.print("ready for encoding")
       server.print("starting server")

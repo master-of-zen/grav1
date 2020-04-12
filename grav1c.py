@@ -4,11 +4,13 @@
 import os, subprocess, re, contextlib, requests, time, sys
 from curses import wrapper, curs_set
 from tempfile import NamedTemporaryFile
+from zipfile import ZipFile
+from io import BytesIO
 
 def print_progress(n, total, size=10, suffix=""):
   fill = "█" * int((n / total) * size)
   remaining = " " * (size - len(fill))
-  return f"{int(100 * n / total):3d}% {n}/{total}"
+  return f"{int(100 * n / total):3d}%|{fill}{remaining}| {n}/{total}"
 
 def get_frames(input):
   cmd = f"ffmpeg -hide_banner -map 0:v:0 -c copy -f null {os.devnull} -i".split(" ")
@@ -118,19 +120,15 @@ def client(args, status_cb):
             print("failed to delete")
             time.sleep(1)
 
-def do(args, i):
-  time.sleep(0.1*i)
-  #update_status(i, "starting")
-  update_status(i, f"{1}/2: {print_progress(2023, 4567)}")
-  while True:
-    pass
-  #client(args, lambda msg: update_status(i, msg))
+def do(host, i):
+  update_status(i, "starting")
+  time.sleep(0.1)
+  client(host, args.vmaf_path, lambda msg: update_status(i, msg))
 
 worker_log = {}
 def update_status(i, msg):
   worker_log[i] = msg
 
-# this is kind of cursed
 def window(scr):
   scr.nodelay(1)
   curs_set(0)
@@ -143,7 +141,7 @@ def window(scr):
 
     msg = []
     for worker in worker_log:
-      msg.append(worker_log[worker])
+      msg.append(f"{worker} {worker_log[worker]}")
 
     scr.erase()
     scr.addstr(f"target: {args.target} workers: {args.workers}\n")
@@ -161,14 +159,37 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument("target", type=str, nargs="?", default="http://174.6.71.104:7899")
   parser.add_argument("--vmaf-model-path", dest="vmaf_path", default="vmaf_v0.6.1.pkl" if os.name == "nt" else "")
-  parser.add_argument("--workers", dest="workers", default=10)
+  parser.add_argument("--workers", dest="workers", default=1)
   parser.add_argument("--threads", dest="threads", default=4)
 
   args = parser.parse_args()
 
+  if os.name == "nt":
+    if not os.path.isfile("aomenc.exe"):
+      print("aomenc is missing, downloading...")
+      r = requests.get("https://f.grass.moe/f/Sz/aom.zip")
+      zipdata = BytesIO()
+      zipdata.write(r.content)
+      zipfile = ZipFile(zipdata)
+      for zipinfo in zipfile.filelist:
+        with zipfile.open(zipinfo.filename) as f:
+          with open(zipinfo.filename, "wb+") as new_file:
+            new_file.write(f.read())
+        
+    if not os.path.isfile("ffmpeg.exe"):
+      print("ffmpeg is missing, downloading...")
+      r = requests.get("https://f.grass.moe/f/Sy/ffmpeg.zip")
+      zipdata = BytesIO()
+      zipdata.write(r.content)
+      zipfile = ZipFile(zipdata)
+      with zipfile.open("ffmpeg.exe") as f_ffmpeg:
+        with open("ffmpeg.exe", "wb+") as f:
+          f.write(f_ffmpeg.read())
+
   from threading import Thread
 
   workers = []
+
   wrapper(window)
 
   for i in range(0, int(args.workers)):

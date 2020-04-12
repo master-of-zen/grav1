@@ -120,10 +120,10 @@ def client(args, status_cb):
             print("failed to delete")
             time.sleep(1)
 
-def do(host, i):
+def do(args, i):
   update_status(i, "starting")
-  time.sleep(0.1)
-  client(host, args.vmaf_path, lambda msg: update_status(i, msg))
+  time.sleep(0.1*i)
+  client(args, lambda msg: update_status(i, msg))
 
 worker_log = {}
 def update_status(i, msg):
@@ -190,9 +190,9 @@ if __name__ == "__main__":
 
   workers = []
 
-  wrapper(window)
-
   for i in range(0, int(args.workers)):
     worker = Thread(target=do, args=(args, i,), daemon=True)
     worker.start()
     workers.append(worker)
+
+  wrapper(window)

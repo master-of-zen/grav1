@@ -5,10 +5,10 @@ import os, subprocess, re, contextlib, requests, time, sys
 from curses import wrapper, curs_set
 from tempfile import NamedTemporaryFile
 
-def print_progress(n, total, size=20, suffix=""):
+def print_progress(n, total, size=10, suffix=""):
   fill = "█" * int((n / total) * size)
   remaining = " " * (size - len(fill))
-  return f"{int(100 * n / total):3d}%|{fill}{remaining}| {n}/{total}"
+  return f"{int(100 * n / total):3d}% {n}/{total}"
 
 def get_frames(input):
   cmd = f"ffmpeg -hide_banner -map 0:v:0 -c copy -f null {os.devnull} -i".split(" ")
@@ -119,11 +119,15 @@ def client(args, status_cb):
             time.sleep(1)
 
 def do(args, i):
-  screen(i, "starting")
-  client(args, lambda msg: screen(i, msg))
+  time.sleep(0.1*i)
+  #update_status(i, "starting")
+  update_status(i, f"{1}/2: {print_progress(2023, 4567)}")
+  while True:
+    pass
+  #client(args, lambda msg: update_status(i, msg))
 
 worker_log = {}
-def screen(i, msg):
+def update_status(i, msg):
   worker_log[i] = msg
 
 # this is kind of cursed
@@ -131,7 +135,7 @@ def window(scr):
   scr.nodelay(1)
   curs_set(0)
   while True:
-    alive = False
+    alive = False if len(workers) > 0 else True
     for worker in workers:
       if worker.is_alive():
         alive = True
@@ -139,7 +143,7 @@ def window(scr):
 
     msg = []
     for worker in worker_log:
-      msg.append(f"{worker} {worker_log[worker]}")
+      msg.append(worker_log[worker])
 
     scr.erase()
     scr.addstr(f"target: {args.target} workers: {args.workers}\n")
@@ -157,7 +161,7 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument("target", type=str, nargs="?", default="http://174.6.71.104:7899")
   parser.add_argument("--vmaf-model-path", dest="vmaf_path", default="vmaf_v0.6.1.pkl" if os.name == "nt" else "")
-  parser.add_argument("--workers", dest="workers", default=1)
+  parser.add_argument("--workers", dest="workers", default=10)
   parser.add_argument("--threads", dest="threads", default=4)
 
   args = parser.parse_args()
@@ -165,11 +169,9 @@ if __name__ == "__main__":
   from threading import Thread
 
   workers = []
+  wrapper(window)
 
   for i in range(0, int(args.workers)):
     worker = Thread(target=do, args=(args, i,), daemon=True)
     worker.start()
     workers.append(worker)
-    time.sleep(0.1)
-
-  wrapper(window)

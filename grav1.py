@@ -25,7 +25,8 @@ def _scene_detect(video, threshold):
   scene_list = scene_manager.get_scene_list(base_timecode)
 
   scenes = [scene[0].get_timecode() for scene in scene_list]
-  scenes = ",".join(scenes[1:])
+
+  scenes = ",".join(scenes[1:][::2])
 
   return scenes
 
@@ -94,6 +95,7 @@ def split(video, path_split, threshold=50):
     timecodes = open("timecodes", "r").read()
   else:
     timecodes = _scene_detect(video, threshold)
+
     with open("timecodes", "w+") as file:
       file.write(timecodes)
 
@@ -139,13 +141,13 @@ class Server:
     self.config = type("", (), {})
     self.config.encoder = "aomenc"
     self.config.encoder_params = args.encoder_params
-    self.config.path_input = args.video
+    self.config.path_input = args.input
     self.config.path_output = args.output if args.output else f"{self.config.path_input}_av1.webm"
 
     self.last_message = ""
 
     self.frames = 0
-    self.total_frames = get_frames(args.video)
+    self.total_frames = get_frames(args.input)
     
     self.encode_start = None
     self.encoded_frames = 0
@@ -153,7 +155,7 @@ class Server:
     self.jobs = {}
 
     if not os.path.isdir(path_split) or len(os.listdir(path_split)) == 0:
-      split(args.video, path_split, args.threshold)
+      split(args.input, path_split, args.threshold)
     
     self.scenes = os.listdir(path_split)
 
@@ -259,7 +261,7 @@ def receive():
     return "already done", 200
 
   os.makedirs(path_encode, exist_ok=True)
-
+  
   file.save(encoded)
 
   frames = get_frames(encoded)
@@ -383,9 +385,10 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument("-i", dest="input", default=None)
   parser.add_argument("target", type=str, default=None)
+  parser.add_argument("--threshold", type=int, default=50)
   parser.add_argument("--av1-options", dest="av1_options", type=str, default=
-    "--lag-in-frames=35 \
-    -b 10 --aq-mode=3 --cpu-used=0 --end-usage=vbr --target-bitrate=20 -w 768 -h 432"
+    "--lag-in-frames=35 --auto-alt-ref=1 \
+    -b 10 --aq-mode=3 --cpu-used=0 --end-usage=vbr --target-bitrate=8 -w 768 -h 432"
   )
   parser.add_argument("--vmaf-model-path", dest="vmaf_path", default="vmaf_v0.6.1.pkl" if os.name == "nt" else "")
 

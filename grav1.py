@@ -161,9 +161,6 @@ class Server:
 
     self.total_scenes = len(self.scenes)
 
-    if not os.path.isdir(path_encode) or len(os.listdir(path_encode)) == 0:
-      return
-
     print("getting resume data")
 
     for file in self.scenes:

@@ -1,6 +1,8 @@
 # grav1
 ## distributed network av1 encoder
 
+[eight megabyte encodes](https://grass.moe/8mb.html)
+
 ### why?
 simple reason: why not  
 av1 is so hard already and I don't have a threadripper

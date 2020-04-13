@@ -7,7 +7,7 @@ from tempfile import NamedTemporaryFile
 path_split = "split"
 path_encode = "encode"
 
-def _scene_detect(video, threshold):
+def scene_detect(video, threshold, scene_factor):
   from scenedetect.video_manager import VideoManager
   from scenedetect.scene_manager import SceneManager
   from scenedetect.detectors import ContentDetector
@@ -24,16 +24,16 @@ def _scene_detect(video, threshold):
   scene_manager.detect_scenes(frame_source=video_manager, show_progress=True)
   scene_list = scene_manager.get_scene_list(base_timecode)
 
-  scenes = [scene[0].get_timecode() for scene in scene_list]
+  scenes = [str(scene[0].get_frames()) for scene in scene_list]
 
-  scenes = ",".join(scenes[1:][::2])
+  scenes = ",".join(scenes[1:][::scene_factor])
 
   return scenes
 
 def time2sec(search):
   return int(search.group(1)) * 60 * 60 + int(search.group(2)) * 60 + int(search.group(3)) + float("." + search.group(4))
 
-def _split(video, timecodes, path_split):
+def _split(video, frames, path_split):
   os.makedirs(path_split, exist_ok=True)
 
   cmd = [
@@ -46,10 +46,10 @@ def _split(video, timecodes, path_split):
     "-avoid_negative_ts", "1"
   ]
   
-  if len(timecodes) > 0:
+  if len(frames) > 0:
     cmd.extend([
       "-f", "segment",
-      "-segment_times", timecodes
+      "-segment_frames", frames
     ])
 
   cmd.append(os.path.join(path_split, "%05d.mkv"))
@@ -83,24 +83,22 @@ def _split(video, timecodes, path_split):
       print()
       return True
 
+    return False
   except KeyboardInterrupt as e:
     pipe.kill()
     raise e
-  finally:
-    print()
-    return False
 
-def split(video, path_split, threshold=50):
-  if os.path.isfile("timecodes"):
-    timecodes = open("timecodes", "r").read()
+def split(video, path_split, threshold, scene_factor):
+  if os.path.isfile("frames"):
+    frames = open("frames", "r").read()
   else:
-    timecodes = _scene_detect(video, threshold)
+    frames = scene_detect(video, threshold, scene_factor)
 
-    with open("timecodes", "w+") as file:
-      file.write(timecodes)
+    with open("frames", "w+") as file:
+      file.write(frames)
 
-  if _split(video, timecodes, path_split):
-    os.remove("timecodes")
+  if _split(video, frames, path_split):
+    os.remove("frames")
     return True
   
   return False
@@ -155,7 +153,7 @@ class Server:
     self.jobs = {}
 
     if not os.path.isdir(path_split) or len(os.listdir(path_split)) == 0:
-      split(args.input, path_split, args.threshold)
+      split(args.input, path_split, args.threshold, args.scene_factor)
     
     self.scenes = os.listdir(path_split)
 
@@ -383,9 +381,10 @@ if __name__ == "__main__":
   parser.add_argument("-i", dest="input", default=None)
   parser.add_argument("target", type=str, default=None)
   parser.add_argument("--threshold", type=int, default=50)
+  parser.add_argument("--scene-factor", type=int, default=1)
   parser.add_argument("--av1-options", dest="encoder_params", type=str, default=
     "--lag-in-frames=35 --auto-alt-ref=1 \
-    -b 10 --aq-mode=3 --cpu-used=0 --end-usage=vbr --target-bitrate=8 -w 768 -h 432"
+    -b 10 --aq-mode=2 --cpu-used=0 --end-usage=vbr --target-bitrate=10 -w 768 -h 432"
   )
   parser.add_argument("--vmaf-model-path", dest="vmaf_path", default="vmaf_v0.6.1.pkl" if os.name == "nt" else "")
 

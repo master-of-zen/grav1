@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import os, subprocess, re, requests, time, sys, json
+import os, subprocess, re, time, sys, json
 from datetime import datetime
 
 from flask import Flask, request, send_file, make_response, send_from_directory

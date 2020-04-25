@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # lightweight client-only for encoding
 
-import os, subprocess, re, contextlib, requests, time, sys
-from curses import wrapper, curs_set
+import os, subprocess, re, contextlib, requests, time, sys, json
 from tempfile import NamedTemporaryFile
 from zipfile import ZipFile
 from io import BytesIO
@@ -33,7 +32,10 @@ def tmp_file(mode, content, suffix=""):
 def aom_encode(input, encoder_params, args, status_cb):
   output_filename = f"{input}.ivf"
 
-  ffmpeg = f"ffmpeg -y -hide_banner -loglevel error -i {input} -strict -1 -pix_fmt yuv420p -f yuv4mpegpipe -".split(" ")
+  ffmpeg = f"ffmpeg -y -hide_banner -loglevel error".split(" ")
+  ffmpeg.extend(["-i",  input])
+  ffmpeg.extend("-strict -1 -pix_fmt yuv420p -f yuv4mpegpipe -".split(" "))
+
   aom = f"aomenc - --fpf={input}.log --threads={args.threads} {encoder_params}".split(" ")
 
   aom.append("--passes=2")
@@ -43,6 +45,8 @@ def aom_encode(input, encoder_params, args, status_cb):
   ]]
 
   total_frames = get_frames(input)
+
+  pipe = None
 
   try:
     for pass_n, cmd in enumerate(passes, start=1):
@@ -56,7 +60,7 @@ def aom_encode(input, encoder_params, args, status_cb):
         stderr=subprocess.STDOUT,
         universal_newlines=True)
 
-      status_cb(f"{os.path.basename(input)} pass: {pass_n} {print_progress(0, total_frames)}")
+      status_cb(f"pass: {pass_n} {print_progress(0, total_frames)}")
 
       while True:
         line = pipe.stdout.readline().strip()
@@ -66,7 +70,7 @@ def aom_encode(input, encoder_params, args, status_cb):
 
         match = re.search(r"frame *([^ ]+?)/", line)
         if match:
-          status_cb(f"{os.path.basename(input)} pass: {pass_n} {print_progress(int(match.group(1)), total_frames)}")
+          status_cb(f"pass: {pass_n} {print_progress(int(match.group(1)), total_frames)}")
       
       if pipe.returncode != 0:
         status_cb("error")
@@ -78,58 +82,89 @@ def aom_encode(input, encoder_params, args, status_cb):
     return output_filename
   except Exception as e:
     print("killing worker")
-    pipe.kill()
+    if pipe:
+      pipe.kill()
     raise e
 
-def client(args, status_cb):
-  while True:
-    try:
-      status_cb("downloading")
-      r = requests.get(args.target + "/get_job")
-      if r.status_code == 404:
-        status_cb("finished")
-        return
-      job = type("", (), {})
-      job.id = r.headers["id"]
-      job.filename = r.headers["filename"]
-      job.encoder_params = r.headers["encoder_params"]
-      job.content = r.content
-    except requests.exceptions.ConnectionError:
-      status_cb("server not found")
-      sys.exit()
+class Lock:
+  def __init__(self):
+    self.locked = False
 
-    if not job:
-      status_cb("finished")
-      return
+def client(args, jobs, lock, status_cb):
+  while True:
+    status_cb("waiting")
+
+    while lock.locked:
+      pass
+
+    lock.locked = True
+
+    status_cb("downloading")
+
+    jobs_str = json.dumps([{"projectid": job.projectid, "scene": job.scene} for job in jobs])
+
+    try:
+      r = requests.get(f"{args.target}/api/get_job/{jobs_str}", timeout=3)
+    except:
+      for i in range(0,15):
+        status_cb(f"waiting...{15-i:2d}")
+        time.sleep(1)
+      lock.locked = False
+      continue
+
+    if r.status_code is not 200 or "success" not in r.headers or r.headers["success"] == "0":
+      for i in range(0,15):
+        status_cb(f"waiting...{15-i:2d}")
+        time.sleep(1)
+      lock.locked = False
+      continue
+
+    status_cb(f"downloaded {len(r.content)}")
+
+    job = type("", (), {})
+    job.id = r.headers["id"]
+    job.filename = r.headers["filename"]
+    job.scene = r.headers["scene"]
+    job.encoder_params = r.headers["encoder_params"]
+    job.projectid = r.headers["projectid"]
+    job.content = r.content
+    jobs.append(job)
+
+    lock.locked = False
+
+    encoder_params = job.encoder_params
 
     if len(args.vmaf_path) > 0:
-      job.encoder_params = f"{job.encoder_params} --vmaf-model-path={args.vmaf_path}"
+      encoder_params = f"{encoder_params} --vmaf-model-path={args.vmaf_path}"
     
     with tmp_file("wb", job.content, job.filename) as file:
-      output = aom_encode(file, job.encoder_params, args, status_cb)
+      output = aom_encode(file, encoder_params, args, status_cb)
       if output:
         status_cb("uploading")
         with open(output, "rb") as file:
           files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
-          requests.post(args.target + "/finish_job", data={"id": job.id, "filename": job.filename}, files=files)
+          requests.post(args.target + "/finish_job", data={"id": job.id, "scene": job.scene, "projectid": job.projectid, "encoder_params": job.encoder_params}, files=files)
+          jobs.remove(job)
 
         while os.path.isfile(output):
           try:
             os.remove(output)
           except:
-            print("failed to delete")
             time.sleep(1)
 
-def do(args, i):
+    time.sleep(1)
+
+def do(args, i, jobs, lock):
   update_status(i, "starting")
   time.sleep(0.1*i)
-  client(args, lambda msg: update_status(i, msg))
+  client(args, jobs, lock, lambda msg: update_status(i, msg))
 
 worker_log = {}
 def update_status(i, msg):
   worker_log[i] = msg
 
 def window(scr):
+  from curses import curs_set
   scr.nodelay(1)
   curs_set(0)
   while True:
@@ -157,10 +192,11 @@ if __name__ == "__main__":
   import argparse
 
   parser = argparse.ArgumentParser()
-  parser.add_argument("target", type=str, nargs="?", default="http://174.6.71.104:7899")
+  parser.add_argument("target", type=str, nargs="?", default="https://encode.grass.moe")
   parser.add_argument("--vmaf-model-path", dest="vmaf_path", default="vmaf_v0.6.1.pkl" if os.name == "nt" else "")
   parser.add_argument("--workers", dest="workers", default=1)
   parser.add_argument("--threads", dest="threads", default=4)
+  parser.add_argument("--noui", action="store_const", const=True)
 
   args = parser.parse_args()
 
@@ -189,10 +225,17 @@ if __name__ == "__main__":
   from threading import Thread
 
   workers = []
+  jobs = []
+  lock = Lock()
 
   for i in range(0, int(args.workers)):
-    worker = Thread(target=do, args=(args, i,), daemon=True)
+    worker = Thread(target=do, args=(args, i, jobs, lock), daemon=True)
     worker.start()
     workers.append(worker)
 
-  wrapper(window)
+  if args.noui:
+    for worker in workers:
+      worker.join()
+  else:
+    from curses import wrapper
+    wrapper(window)

@@ -13,15 +13,16 @@ from threading import Thread
 
 path_split = "jobs/{}/split"
 path_encode = "jobs/{}/encode"
+path_in = "inputfiles"
 path_out = "jobs/{}/completed.webm"
 
 re_duration = re.compile(r"Duration: (\d{2}):(\d{2}):(\d{2}).(\d{2})", re.U)
 re_position = re.compile(r".*time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})", re.U)
 
 class Project:
-  def __init__(self, path_in, encoder_params, threshold, min_frames, max_frames, scene_settings, id=0):
+  def __init__(self, filename, encoder_params, threshold, min_frames, max_frames, scene_settings, id=0):
     self.projectid = id or int(time.time())
-    self.path_in = path_in
+    self.path_in = os.path.join(path_in, filename)
     self.path_out = path_out.format(self.projectid)
     self.path_split = path_split.format(self.projectid)
     self.path_encode = path_encode.format(self.projectid)
@@ -36,7 +37,7 @@ class Project:
     self.scenes = {}
     self.total_jobs = 0
     
-    self.total_frames = get_frames(path_in)
+    self.total_frames = get_frames(self.path_in)
 
     self.frames = 0
     self.encoded_frames = 0
@@ -179,6 +180,7 @@ def get_scene(projectid, scene):
   return ""
 
 @app.route("/api/get_projects", methods=["GET"])
+@cross_origin()
 def get_projects():
   rtn = []
   for project in projects:
@@ -291,10 +293,12 @@ def receive():
   return "saved", 200
 
 @app.route("/api/list_directory", methods=["GET"])
+@cross_origin()
 def list_directory():
   return json.dumps(os.listdir("inputfiles"))
 
 @app.route("/api/add_project", methods=["POST"])
+@cross_origin()
 def add_project():
   path_input = request.form["input"]
 

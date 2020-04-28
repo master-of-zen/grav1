@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # lightweight client-only for encoding
 
-import os, subprocess, re, contextlib, requests, time, sys, json
+import os, subprocess, re, contextlib, requests, time, json
 from tempfile import NamedTemporaryFile
 from zipfile import ZipFile
 from io import BytesIO
@@ -86,37 +86,41 @@ def aom_encode(input, encoder_params, args, status_cb):
       pipe.kill()
     raise e
 
-class Lock:
-  def __init__(self):
+class Client:
+  def __init__(self, args):
+    self.args = args
+    self.workers = []
+    self.completed = 0
+    self.jobs = []
     self.locked = False
 
-def client(args, jobs, lock, status_cb):
+def work(client, status_cb):
   while True:
     status_cb("waiting")
 
-    while lock.locked:
+    while client.locked:
       pass
 
-    lock.locked = True
+    client.locked = True
 
     status_cb("downloading")
 
-    jobs_str = json.dumps([{"projectid": job.projectid, "scene": job.scene} for job in jobs])
+    jobs_str = json.dumps([{"projectid": job.projectid, "scene": job.scene} for job in client.jobs])
 
     try:
-      r = requests.get(f"{args.target}/api/get_job/{jobs_str}", timeout=3)
+      r = requests.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3)
     except:
-      for i in range(0,15):
+      for i in range(0, 15):
         status_cb(f"waiting...{15-i:2d}")
         time.sleep(1)
-      lock.locked = False
+      client.locked = False
       continue
 
     if r.status_code is not 200 or "success" not in r.headers or r.headers["success"] == "0":
-      for i in range(0,15):
+      for i in range(0, 15):
         status_cb(f"waiting...{15-i:2d}")
         time.sleep(1)
-      lock.locked = False
+      client.locked = False
       continue
 
     status_cb(f"downloaded {len(r.content)}")
@@ -128,23 +132,25 @@ def client(args, jobs, lock, status_cb):
     job.encoder_params = r.headers["encoder_params"]
     job.projectid = r.headers["projectid"]
     job.content = r.content
-    jobs.append(job)
+    client.jobs.append(job)
 
-    lock.locked = False
+    client.locked = False
 
     encoder_params = job.encoder_params
 
-    if len(args.vmaf_path) > 0:
-      encoder_params = f"{encoder_params} --vmaf-model-path={args.vmaf_path}"
+    if len(client.args.vmaf_path) > 0:
+      encoder_params = f"{encoder_params} --vmaf-model-path={client.args.vmaf_path}"
     
     with tmp_file("wb", job.content, job.filename) as file:
-      output = aom_encode(file, encoder_params, args, status_cb)
+      output = aom_encode(file, encoder_params, client.args, status_cb)
       if output:
         status_cb("uploading")
         with open(output, "rb") as file:
           files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
-          requests.post(args.target + "/finish_job", data={"id": job.id, "scene": job.scene, "projectid": job.projectid, "encoder_params": job.encoder_params}, files=files)
-          jobs.remove(job)
+          r = requests.post(client.args.target + "/finish_job", data={"id": job.id, "scene": job.scene, "projectid": job.projectid, "encoder_params": job.encoder_params}, files=files)
+          if r.text == "saved":
+            client.completed += 1
+          client.jobs.remove(job)
 
         while os.path.isfile(output):
           try:
@@ -154,10 +160,10 @@ def client(args, jobs, lock, status_cb):
 
     time.sleep(1)
 
-def do(args, i, jobs, lock):
+def do(i, client):
   update_status(i, "starting")
   time.sleep(0.1*i)
-  client(args, jobs, lock, lambda msg: update_status(i, msg))
+  work(client, lambda msg: update_status(i, msg))
 
 worker_log = {}
 def update_status(i, msg):
@@ -168,8 +174,8 @@ def window(scr):
   scr.nodelay(1)
   curs_set(0)
   while True:
-    alive = False if len(workers) > 0 else True
-    for worker in workers:
+    alive = False if len(client.workers) > 0 else True
+    for worker in client.workers:
       if worker.is_alive():
         alive = True
         break
@@ -179,7 +185,7 @@ def window(scr):
       msg.append(f"{worker} {worker_log[worker]}")
 
     scr.erase()
-    scr.addstr(f"target: {args.target} workers: {args.workers}\n")
+    scr.addstr(f"target: {args.target} workers: {args.workers} completed: {client.completed}\n")
     scr.addstr("\n".join(msg))
     scr.refresh()
 
@@ -224,17 +230,15 @@ if __name__ == "__main__":
 
   from threading import Thread
 
-  workers = []
-  jobs = []
-  lock = Lock()
+  client = Client(args)
 
   for i in range(0, int(args.workers)):
-    worker = Thread(target=do, args=(args, i, jobs, lock), daemon=True)
+    worker = Thread(target=do, args=(i, client), daemon=True)
     worker.start()
-    workers.append(worker)
+    client.workers.append(worker)
 
   if args.noui:
-    for worker in workers:
+    for worker in client.workers:
       worker.join()
   else:
     from curses import wrapper

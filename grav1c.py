@@ -29,7 +29,58 @@ def tmp_file(mode, content, suffix=""):
   finally:
     os.unlink(tmp_name)
 
+def vp9_encode(input, encoder_params, args, status_cb):
+  output_filename = f"{input}.ivf"
+
+  vp9 = f"ffmpeg -y -hide_banner".split(" ")
+  vp9.extend(["-i",  input, "-c:v", "libvpx-vp9", "-an", "-passlogfile", f"{input}.log"])
+  vp9.extend(encoder_params.split(" "))
+  passes = [vp9 + cmd for cmd in [
+    ["-pass", "1", "-f", "webm", os.devnull],
+    ["-pass", "2", output_filename]
+  ]]
+
+  total_frames = get_frames(input)
+
+  pipe = None
+
+  try:
+    for pass_n, cmd in enumerate(passes, start=1):
+      pipe = subprocess.Popen(cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True)
+
+      status_cb(f"vp9 pass: {pass_n} {print_progress(0, total_frames)}")
+
+      while True:
+        line = pipe.stdout.readline().strip()
+
+        if len(line) == 0 and pipe.poll() is not None:
+          break
+
+        matches = re.findall(r"frame= *([^ ]+?) ", line)
+        if matches:
+          status_cb(f"vp9 pass: {pass_n} {print_progress(int(matches[-1]), total_frames)}")
+      
+      if pipe.returncode != 0:
+        status_cb("error")
+        return False
+
+    if os.path.isfile(f"{input}.log-0.log"):
+      os.remove(f"{input}.log-0.log")
+
+    return output_filename
+  except Exception as e:
+    print("killing worker")
+    if pipe:
+      pipe.kill()
+    raise e
+
 def aom_encode(input, encoder_params, args, status_cb):
+  if len(client.args.vmaf_path) > 0:
+    encoder_params = f"{encoder_params} --vmaf-model-path={client.args.vmaf_path}"
+
   output_filename = f"{input}.ivf"
 
   ffmpeg = f"ffmpeg -y -hide_banner -loglevel error".split(" ")
@@ -60,7 +111,7 @@ def aom_encode(input, encoder_params, args, status_cb):
         stderr=subprocess.STDOUT,
         universal_newlines=True)
 
-      status_cb(f"pass: {pass_n} {print_progress(0, total_frames)}")
+      status_cb(f"aom pass: {pass_n} {print_progress(0, total_frames)}")
 
       while True:
         line = pipe.stdout.readline().strip()
@@ -70,7 +121,7 @@ def aom_encode(input, encoder_params, args, status_cb):
 
         match = re.search(r"frame *([^ ]+?)/", line)
         if match:
-          status_cb(f"pass: {pass_n} {print_progress(int(match.group(1)), total_frames)}")
+          status_cb(f"aom pass: {pass_n} {print_progress(int(match.group(1)), total_frames)}")
       
       if pipe.returncode != 0:
         status_cb("error")
@@ -91,6 +142,7 @@ class Client:
     self.args = args
     self.workers = []
     self.completed = 0
+    self.failed = 0
     self.jobs = []
     self.locked = False
 
@@ -129,27 +181,31 @@ def work(client, status_cb):
     job.id = r.headers["id"]
     job.filename = r.headers["filename"]
     job.scene = r.headers["scene"]
+    job.encoder = r.headers["encoder"]
     job.encoder_params = r.headers["encoder_params"]
     job.projectid = r.headers["projectid"]
     job.content = r.content
     client.jobs.append(job)
 
     client.locked = False
-
-    encoder_params = job.encoder_params
-
-    if len(client.args.vmaf_path) > 0:
-      encoder_params = f"{encoder_params} --vmaf-model-path={client.args.vmaf_path}"
     
     with tmp_file("wb", job.content, job.filename) as file:
-      output = aom_encode(file, encoder_params, client.args, status_cb)
+      if job.encoder == "vp9":
+        output = vp9_encode(file, job.encoder_params, client.args, status_cb)
+      elif job.encoder == "aom":
+        output = aom_encode(file, job.encoder_params, client.args, status_cb)
+
       if output:
         status_cb("uploading")
         with open(output, "rb") as file:
           files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
-          r = requests.post(client.args.target + "/finish_job", data={"id": job.id, "scene": job.scene, "projectid": job.projectid, "encoder_params": job.encoder_params}, files=files)
+          r = requests.post(client.args.target + "/finish_job", data={"id": job.id, "scene": job.scene, "projectid": job.projectid, "encoder": job.encoder, "encoder_params": job.encoder_params}, files=files)
           if r.text == "saved":
             client.completed += 1
+          else:
+            client.failed += 1
+            status_cb(f"error {r.status_code}")
+            time.sleep(1)
           client.jobs.remove(job)
 
         while os.path.isfile(output):
@@ -182,10 +238,10 @@ def window(scr):
 
     msg = []
     for worker in worker_log:
-      msg.append(f"{worker} {worker_log[worker]}")
+      msg.append(worker_log[worker])
 
     scr.erase()
-    scr.addstr(f"target: {args.target} workers: {args.workers} completed: {client.completed}\n")
+    scr.addstr(f"target: {args.target} workers: {args.workers} hit: {client.completed} miss: {client.failed}\n")
     scr.addstr("\n".join(msg))
     scr.refresh()
 

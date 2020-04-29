@@ -20,7 +20,7 @@ re_duration = re.compile(r"Duration: (\d{2}):(\d{2}):(\d{2}).(\d{2})", re.U)
 re_position = re.compile(r".*time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})", re.U)
 
 class Project:
-  def __init__(self, filename, encoder_params, threshold, min_frames, max_frames, scene_settings, id=0):
+  def __init__(self, filename, encoder, encoder_params, threshold, min_frames, max_frames, scene_settings, priority=0, id=0):
     self.projectid = id or int(time.time())
     self.path_in = os.path.join(path_in, filename)
     self.path_out = path_out.format(self.projectid)
@@ -32,10 +32,12 @@ class Project:
     self.threshold = threshold
     self.min_frames = min_frames
     self.max_frames = max_frames
+    self.encoder = encoder
     self.encoder_params = encoder_params
     self.scene_settings = scene_settings
     self.scenes = {}
     self.total_jobs = 0
+    self.priority = priority
     
     self.total_frames = get_frames(self.path_in)
 
@@ -83,8 +85,10 @@ class Project:
         scene_setting = f"{self.encoder_params}"
 
       self.jobs[scene_n] = Job(
+        self.encoder,
         os.path.join(self.path_split, scene),
         self.projectid,
+        self.priority,
         scene_setting,
         num_frames
       )
@@ -119,7 +123,8 @@ class Project:
       ffmpeg(cmd, lambda x: self.set_status(f"{x}, {self.total_frames}"))
 
 class Job:
-  def __init__(self, path, projectid, encoder_params, frames):
+  def __init__(self, encoder, path, projectid, priority, encoder_params, frames):
+    self.encoder = encoder
     self.filename = os.path.basename(path)
     self.scene = os.path.splitext(self.filename)[0]
     self.path = path
@@ -127,6 +132,7 @@ class Job:
     self.encoder_params = encoder_params
     self.workers = []
     self.projectid = projectid
+    self.priority = priority
     self.frames = frames
 
 def save_projects():
@@ -139,6 +145,7 @@ def save_projects():
     p["min_frames"] = project.min_frames
     p["max_frames"] = project.max_frames
     p["scene_settings"] = project.scene_settings
+    p["encoder"] = project.encoder
     rtn[project.projectid] = p
 
   json.dump(rtn, open("projects.json", "w+"))
@@ -150,11 +157,13 @@ def load_projects():
     p = ps[pid]
     project = Project(
       p["path_in"],
+      p["encoder"],
       p["encoder_params"],
       p["threshold"],
       p["min_frames"],
       p["max_frames"],
       p["scene_settings"],
+      p["priority"],
       pid)
     projects.append(project)
   
@@ -193,8 +202,9 @@ def get_projects():
     p["total_jobs"] = project.total_jobs
     p["status"] = project.status
     p["encoder_params"] = project.encoder_params
-    
+    p["encoder"] = project.encoder
     p["scenes"] = project.scenes
+    p["priority"] = project.priority
 
     rtn.append(p)
   return json.dumps(rtn)
@@ -209,7 +219,7 @@ def get_job(jobs):
     all_jobs.extend(project.jobs.values())
 
   all_jobs = [job for job in all_jobs if not any(job.scene == job2["scene"] and str(job.projectid) == str(job2["projectid"]) for job2 in jobs)]
-  all_jobs = sorted(all_jobs, key= lambda x: (len(x.workers), x.frames))
+  all_jobs = sorted(all_jobs, key= lambda x: (x.priority, len(x.workers), x.frames))
   if len(all_jobs) > 0:
     new_job = all_jobs[0]
     
@@ -227,6 +237,7 @@ def get_job(jobs):
     resp.headers["filename"] = new_job.filename
     resp.headers["scene"] = new_job.scene
     resp.headers["id"] = workerid
+    resp.headers["encoder"] = new_job.encoder
     resp.headers["encoder_params"] = new_job.encoder_params
     return resp
   else:
@@ -237,6 +248,7 @@ def get_job(jobs):
 @app.route("/finish_job", methods=["POST"])
 def receive():
   sender = request.form["id"]
+  encoder = request.form["encoder"]
   encoder_params = request.form["encoder_params"]
   projectid = request.form["projectid"]
   scene_number = str(request.form["scene"])
@@ -304,13 +316,14 @@ def add_project():
 
   if not os.path.isfile(path_input): return ""
 
+  encoder = request.form["encoder"]
   encoder_params = request.form["encoder_params"]
   threshold = request.form["threshold"]
   min_frames = request.form["min_frames"]
   max_frames = request.form["max_frames"]
   scene_factor = int(request.form["scene_factor"])
 
-  new_project = Project(path_input, encoder_params, threshold, min_frames, max_frames, {})
+  new_project = Project(path_input, encoder, encoder_params, threshold, min_frames, max_frames, {})
   projects.append(new_project)
 
   save_projects()

@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 
-import os, subprocess, re, time, sys, json
-from datetime import datetime
+import os, re, json
+from time import time
+from threading import Thread
 
 from flask import Flask, request, send_file, make_response, send_from_directory
 from flask_cors import cross_origin
 from wsgiserver import WSGIServer
 
 from util import get_frames, parse_time, split, tmp_file, print_progress, ffmpeg
-
-from threading import Thread
 
 path_split = "jobs/{}/split"
 path_encode = "jobs/{}/encode"
@@ -21,7 +20,7 @@ re_position = re.compile(r".*time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})", re.U)
 
 class Project:
   def __init__(self, filename, encoder, encoder_params, threshold, min_frames, max_frames, scene_settings, priority=0, id=0):
-    self.projectid = id or int(time.time())
+    self.projectid = id or int(time())
     self.path_in = os.path.join(path_in, filename)
     self.path_out = path_out.format(self.projectid)
     self.path_split = path_split.format(self.projectid)
@@ -107,7 +106,7 @@ class Project:
       self.set_status("complete")
 
   def update_progress(self):
-    if self.encode_start: fps = self.encoded_frames / max((datetime.now() - self.encode_start).seconds, 1)
+    if self.encode_start: fps = self.encoded_frames / max(time() - self.encode_start, 1)
     else: fps = 0
     self.set_status(print_progress(self.frames, self.total_frames, suffix=f"{fps:.2f}fps {len(self.jobs)}/{self.total_jobs} scenes remaining"))
 
@@ -236,7 +235,7 @@ def get_job(jobs):
     new_job.workers.append(workerid)
 
     if not project.encode_start:
-      project.encode_start = datetime.now()
+      project.encode_start = time()
 
     print("sent", new_job.projectid, new_job.scene, "to", workerid)
 
@@ -370,8 +369,14 @@ def add_project():
   return json.dumps({"success": True, "projectid": new_project.projectid})
 
 if __name__ == "__main__":
+  import argparse
+
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--port", dest="port", default=7899)
+  args = parser.parse_args()
+
   projects = {}
   Thread(target=load_projects).start()
 
-  print("listening on 7899")
-  WSGIServer(app, port=7899).start()
+  print("listening on port", args.port)
+  WSGIServer(app, port=args.port).start()

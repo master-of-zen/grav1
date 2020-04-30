@@ -168,7 +168,7 @@ def work(client, status_cb):
       client.locked = False
       continue
 
-    if r.status_code is not 200 or "success" not in r.headers or r.headers["success"] == "0":
+    if r.status_code != 200 or "success" not in r.headers or r.headers["success"] == "0":
       for i in range(0, 15):
         status_cb(f"waiting...{15-i:2d}")
         time.sleep(1)

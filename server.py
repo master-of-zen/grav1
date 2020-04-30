@@ -137,7 +137,8 @@ class Job:
 
 def save_projects():
   rtn = {}
-  for project in projects:
+  for pid in projects:
+    project = projects[pid]
     p = {}
     p["path_in"] = project.path_in
     p["encoder_params"] = project.encoder_params
@@ -146,7 +147,7 @@ def save_projects():
     p["max_frames"] = project.max_frames
     p["scene_settings"] = project.scene_settings
     p["encoder"] = project.encoder
-    rtn[project.projectid] = p
+    rtn[pid] = p
 
   json.dump(rtn, open("projects.json", "w+"))
 
@@ -165,10 +166,10 @@ def load_projects():
       p["scene_settings"],
       p["priority"],
       pid)
-    projects.append(project)
+    projects[pid] = project
   
-  for project in projects:
-    project.start()
+  for pid in projects:
+    projects[pid].start()
 
 app = Flask(__name__)
 
@@ -183,18 +184,25 @@ def root(path):
 @app.route("/scene/<projectid>/<scene>", methods=["GET"])
 @cross_origin()
 def get_scene(projectid, scene):
-  for project in projects:
-    if str(projectid) == str(project.projectid):
-      return send_from_directory(project.path_encode, scene)
-  return ""
+  if projectid in projects:
+    return send_from_directory(projects[projectid].path_encode, scene)
+  return "", 404
+
+@app.route("/completed/<projectid>", methods=["GET"])
+@cross_origin()
+def get_completed(projectid):
+  if projectid in projects:
+    return send_file(projects[projectid].path_out)
+  return "", 404
 
 @app.route("/api/get_projects", methods=["GET"])
 @cross_origin()
 def get_projects():
   rtn = []
-  for project in projects:
+  for pid in projects:
+    project = projects[pid]
     p = {}
-    p["projectid"] = project.projectid
+    p["projectid"] = pid
     p["input"] = project.path_in
     p["frames"] = project.frames
     p["total_frames"] = project.total_frames
@@ -205,6 +213,7 @@ def get_projects():
     p["encoder"] = project.encoder
     p["scenes"] = project.scenes
     p["priority"] = project.priority
+    p["workers"] = [job for job in project.jobs if len(project.jobs[job].workers) > 0]
 
     rtn.append(p)
   return json.dumps(rtn)
@@ -250,29 +259,28 @@ def receive():
   sender = request.form["id"]
   encoder = request.form["encoder"]
   encoder_params = request.form["encoder_params"]
-  projectid = request.form["projectid"]
+  projectid = str(request.form["projectid"])
   scene_number = str(request.form["scene"])
   file = request.files["file"]
 
-  project = None
-  for p in projects:
-    if str(projectid) == str(p.projectid):
-      project = p
-      break
+  if projectid not in projects:
+    return "project not found", 200
 
-  if not project or scene_number not in project.jobs:
-    return "bad file", 200
+  project = projects[projectid]
+
+  if scene_number not in project.jobs:
+    return "job not found", 200
 
   job = project.jobs[scene_number]
 
   if job.encoder_params != encoder_params:
-    print("discard", project.projectid, scene_number, "bad params")
+    print("discard", projectid, scene_number, "bad params")
     return "bad params", 200
 
   encoded = os.path.join(project.path_encode, job.encoded_name)
   
   if os.path.isfile(encoded):
-    print("discard", project.projectid, scene_number, "already done")
+    print("discard", projectid, scene_number, "already done")
     return "already done", 200
 
   os.makedirs(project.path_encode, exist_ok=True)
@@ -283,7 +291,7 @@ def receive():
   
   if scene["frames"] != get_frames(encoded):
     os.remove(encoded)
-    print("discard", project.projectid, scene_number, "frame mismatch")
+    print("discard", projectid, scene_number, "frame mismatch")
     return "bad framecount", 200
 
   scene["filesize"] = os.stat(encoded).st_size
@@ -294,12 +302,12 @@ def receive():
     
   del project.jobs[scene_number]
 
-  print("recv", project.projectid, scene_number, "from", sender)
+  print("recv", projectid, scene_number, "from", sender)
 
   project.update_progress()
 
   if len(project.jobs) == 0 and project.frames == project.total_frames:
-    print("done", project.projectid)
+    print("done", projectid)
     Thread(target=lambda: project.complete()).start()
     
   return "saved", 200
@@ -309,22 +317,51 @@ def receive():
 def list_directory():
   return json.dumps(os.listdir("inputfiles"))
 
+@app.route("/api/delete_project/<projectid>", methods=["POST"])
+@cross_origin()
+def delete_project(projectid):
+  if projectid not in projects:
+    return json.dumps({"success": False, "reason": "Project does not exist."})
+
+  del projects[projectid]
+
+  return json.dumps({"success": True})
+
+@app.route("/api/modify/<projectid>", methods=["POST"])
+@cross_origin()
+def modify_project(projectid):
+  if projectid not in projects:
+    return json.dumps({"success": False, "reason": "Project does not exist."})
+
+  project = projects[projectid]
+
+  changes = request.json
+  if "priority" in changes:
+    project.priority = int(changes["priority"])
+
+  return json.dumps({"success": True})
+
 @app.route("/api/add_project", methods=["POST"])
 @cross_origin()
 def add_project():
-  path_input = request.form["input"]
+  content = request.json
 
-  if not os.path.isfile(path_input): return ""
+  if "input" not in content or not os.path.isfile(content["input"]): return ""
 
-  encoder = request.form["encoder"]
-  encoder_params = request.form["encoder_params"]
-  threshold = request.form["threshold"]
   min_frames = request.form["min_frames"]
   max_frames = request.form["max_frames"]
   scene_factor = int(request.form["scene_factor"])
 
-  new_project = Project(path_input, encoder, encoder_params, threshold, min_frames, max_frames, {})
-  projects.append(new_project)
+  new_project = Project(
+    content["input"],
+    content["encoder"],
+    content["encoder_params"],
+    content["threshold"],
+    content["min_frames"],
+    content["max_frames"],
+    {})
+
+  projects[new_project.projectid] = new_project
 
   save_projects()
 
@@ -333,7 +370,7 @@ def add_project():
   return json.dumps({"success": True, "projectid": new_project.projectid})
 
 if __name__ == "__main__":
-  projects = []
+  projects = {}
   Thread(target=load_projects).start()
 
   print("listening on 7899")

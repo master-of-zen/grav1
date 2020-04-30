@@ -8,7 +8,7 @@ from flask import Flask, request, send_file, make_response, send_from_directory
 from flask_cors import cross_origin
 from wsgiserver import WSGIServer
 
-from util import get_frames, parse_time, split, tmp_file, print_progress, ffmpeg
+from util import get_frames, parse_time, split, tmp_file, ffmpeg
 
 path_split = "jobs/{}/split"
 path_encode = "jobs/{}/encode"
@@ -43,6 +43,7 @@ class Project:
     self.frames = 0
     self.encoded_frames = 0
     self.encode_start = None
+    self.fps = 0
 
     self.total_jobs = 0
     
@@ -68,8 +69,10 @@ class Project:
         "frames": num_frames,
         "encoder_params": ""
       }
+      
+      encoded_filename = self.get_encoded_filename(scene_n)
 
-      file_ivf = os.path.join(self.path_encode, f"{scene_n}.ivf")
+      file_ivf = os.path.join(self.path_encode, encoded_filename)
       
       if os.path.isfile(file_ivf):
         self.scenes[scene_n]["filesize"] = os.stat(file_ivf).st_size
@@ -86,6 +89,7 @@ class Project:
       self.jobs[scene_n] = Job(
         self.encoder,
         os.path.join(self.path_split, scene),
+        encoded_filename,
         self.projectid,
         self.priority,
         scene_setting,
@@ -93,7 +97,7 @@ class Project:
       )
 
     self.log.append("finished loading")
-    self.set_status(print_progress(self.frames, self.total_frames, suffix=f"0fps {len(self.jobs)}/{self.total_jobs} scenes remaining"))
+    self.set_status("ready")
     if os.path.isfile(self.path_out):
       self.set_status("complete")
     else:
@@ -106,28 +110,33 @@ class Project:
       self.set_status("complete")
 
   def update_progress(self):
-    if self.encode_start: fps = self.encoded_frames / max(time() - self.encode_start, 1)
-    else: fps = 0
-    self.set_status(print_progress(self.frames, self.total_frames, suffix=f"{fps:.2f}fps {len(self.jobs)}/{self.total_jobs} scenes remaining"))
+    if self.encode_start: self.fps = self.encoded_frames / max(time() - self.encode_start, 1)
+    else: self.fps = 0
 
   def set_status(self, msg):
     self.status = msg
 
+  def get_encoded_filename(self, scene_n):
+    if self.encoder == "aom":
+      return scene_n + ".ivf"
+    else:
+      return scene_n + ".webm"
+
   def concat(self):
-    scenes = [os.path.join(self.path_encode, f"{os.path.splitext(scene)[0]}.ivf").replace("\\", "/") for scene in self.scenes]
+    scenes = [os.path.join(self.path_encode, self.get_encoded_filename(os.path.splitext(scene)[0])).replace("\\", "/") for scene in self.scenes]
     content = "\n".join([f"file '{scene}'" for scene in scenes])
     with tmp_file("w", content) as file:
       cmd = f"ffmpeg -hide_banner -f concat -safe 0 -y -i".split(" ")
       cmd.extend([file, "-c", "copy", self.path_out])
-      ffmpeg(cmd, lambda x: self.set_status(f"{x}, {self.total_frames}"))
+      ffmpeg(cmd, lambda x: self.set_status(f"concat {x}, {self.total_frames}"))
 
 class Job:
-  def __init__(self, encoder, path, projectid, priority, encoder_params, frames):
+  def __init__(self, encoder, path, encoded_filename, projectid, priority, encoder_params, frames):
     self.encoder = encoder
     self.filename = os.path.basename(path)
     self.scene = os.path.splitext(self.filename)[0]
     self.path = path
-    self.encoded_name = f"{self.scene}.ivf"
+    self.encoded_filename = encoded_filename
     self.encoder_params = encoder_params
     self.workers = []
     self.projectid = projectid
@@ -205,6 +214,7 @@ def get_projects():
     p["input"] = project.path_in
     p["frames"] = project.frames
     p["total_frames"] = project.total_frames
+    p["fps"] = project.fps
     p["jobs"] = len(project.jobs)
     p["total_jobs"] = project.total_jobs
     p["status"] = project.status
@@ -223,7 +233,8 @@ def get_job(jobs):
 
   all_jobs = []
 
-  for project in projects:
+  for pid in projects:
+    project = projects[pid]
     all_jobs.extend(project.jobs.values())
 
   all_jobs = [job for job in all_jobs if not any(job.scene == job2["scene"] and str(job.projectid) == str(job2["projectid"]) for job2 in jobs)]
@@ -276,7 +287,7 @@ def receive():
     print("discard", projectid, scene_number, "bad params")
     return "bad params", 200
 
-  encoded = os.path.join(project.path_encode, job.encoded_name)
+  encoded = os.path.join(project.path_encode, job.encoded_filename)
   
   if os.path.isfile(encoded):
     print("discard", projectid, scene_number, "already done")

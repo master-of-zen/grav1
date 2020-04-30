@@ -30,7 +30,7 @@ def tmp_file(mode, content, suffix=""):
     os.unlink(tmp_name)
 
 def vp9_encode(input, encoder_params, args, status_cb):
-  output_filename = f"{input}.ivf"
+  output_filename = f"{input}.webm"
 
   vp9 = f"ffmpeg -y -hide_banner".split(" ")
   vp9.extend(["-i",  input, "-c:v", "libvpx-vp9", "-an", "-passlogfile", f"{input}.log"])
@@ -199,7 +199,14 @@ def work(client, status_cb):
         status_cb("uploading")
         with open(output, "rb") as file:
           files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
-          r = requests.post(client.args.target + "/finish_job", data={"id": job.id, "scene": job.scene, "projectid": job.projectid, "encoder": job.encoder, "encoder_params": job.encoder_params}, files=files)
+          while True:
+            try:
+              r = requests.post(client.args.target + "/finish_job", data={"id": job.id, "scene": job.scene, "projectid": job.projectid, "encoder": job.encoder, "encoder_params": job.encoder_params}, files=files)
+              break
+            except:
+              status_cb("unable to connect - trying again")
+              time.sleep(1)
+
           if r.text == "saved":
             client.completed += 1
           else:

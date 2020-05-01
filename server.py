@@ -282,8 +282,11 @@ def receive():
     return "job not found", 200
 
   job = project.jobs[scene_number]
+  scene = project.scenes[scene_number]
 
   if job.encoder_params != encoder_params:
+    if sender in job.workers:
+      job.workers.remove(sender)
     print("discard", projectid, scene_number, "bad params")
     return "bad params", 200
 
@@ -294,13 +297,12 @@ def receive():
     return "already done", 200
 
   os.makedirs(project.path_encode, exist_ok=True)
-  
   file.save(encoded)
-
-  scene = project.scenes[scene_number]
   
   if scene["frames"] != get_frames(encoded):
     os.remove(encoded)
+    if sender in job.workers:
+      job.workers.remove(sender)
     print("discard", projectid, scene_number, "frame mismatch")
     return "bad framecount", 200
 

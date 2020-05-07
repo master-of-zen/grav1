@@ -196,7 +196,7 @@ def work(client, status_cb):
         output = aom_encode(file, job.encoder_params, client.args, status_cb)
 
       if output:
-        status_cb("uploading")
+        status_cb(f"uploading {job.projectid} {job.scene}")
         with open(output, "rb") as file:
           files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
           while True:

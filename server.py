@@ -216,14 +216,6 @@ def load_projects():
 
 app = Flask(__name__)
 
-@app.route("/", methods=["GET"])
-def index():
-  return send_from_directory("www", "index.html")
-
-@app.route("/<path:path>", methods=["GET"])
-def root(path):
-  return send_from_directory("www", path)
-
 @app.route("/scene/<projectid>/<scene>", methods=["GET"])
 @cross_origin()
 def get_scene(projectid, scene):

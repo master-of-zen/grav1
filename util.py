@@ -42,9 +42,11 @@ def parse_time(search):
 def print_progress(n, total, size=20, suffix=""):
   return f"{int(100 * n / total):3d}% {n}/{total} {suffix}"
 
-def get_frames(input):
-  cmd = f"ffmpeg -hide_banner -map 0:v:0 -c copy -f null {os.devnull} -i".split(" ")
-  cmd.append(input)
+def get_frames(input, fast=True):
+  cmd = ["ffmpeg", "-hide_banner", "-i", input, "-map", "0:v:0"]
+  if fast:
+    cmd.extend(["-c", "copy",])
+  cmd.extend(["-f", "null", "-"])
   r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
   matches = re.findall(r"frame= *([^ ]+?) ", r.stderr.decode("utf-8") + r.stdout.decode("utf-8"))
   return int(matches[-1])

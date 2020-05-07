@@ -38,16 +38,46 @@ class Project:
     self.total_jobs = 0
     self.priority = priority
     
-    self.total_frames = get_frames(self.path_in)
+    self.total_frames = 0
+
+    self.input_total_frames = get_frames(self.path_in)
 
     self.frames = 0
     self.encoded_frames = 0
     self.encode_start = None
     self.fps = 0
+  
+  def count_frames(self, scene):
+    global ffmpeg_pool
+    scene_n = str(os.path.splitext(scene)[0])
 
-    self.total_jobs = 0
+    num_frames = get_frames(os.path.join(self.path_split, scene))
+
+    self.total_frames += num_frames
+
+    self.scenes[scene_n] = {
+      "filesize": 0,
+      "frames": num_frames,
+      "encoder_params": ""
+    }
     
+    encoded_filename = self.get_encoded_filename(scene_n)
+
+    file_ivf = os.path.join(self.path_encode, encoded_filename)
+
+    if os.path.isfile(file_ivf):
+      self.scenes[scene_n]["filesize"] = os.stat(file_ivf).st_size
+      self.frames += num_frames
+    else:
+      num_frames_slow = get_frames(os.path.join(self.path_split, scene), False)
+      if num_frames_slow != num_frames:
+        print("bad framecount", self.projectid, scene_n, "supposed to be:", num_frames, "got:", num_frames_slow)
+        self.scenes[scene_n]["bad"] = f"bad framecount, supposed to be: {num_frames}, got: {num_frames_slow}"
+
+    ffmpeg_pool -= 1
+
   def start(self):
+    global ffmpeg_pool
     if not os.path.isdir(self.path_split) or len(os.listdir(self.path_split)) == 0:
       self.log.append("splitting")
       self.set_status("splitting")
@@ -60,44 +90,49 @@ class Project:
     if os.path.isdir(self.path_encode):
       self.log.append("getting resume data")
     
+    ffmpeg_threads = []
+
     for scene in scene_filenames:
-      scene_n = str(os.path.splitext(scene)[0])
-      num_frames = get_frames(os.path.join(self.path_split, scene))
+      while ffmpeg_pool >= 4:
+        pass
+      ffmpeg_pool += 1
+      t = Thread(target=self.count_frames, args=(scene,), daemon=True)
+      t.start()
+      ffmpeg_threads.append(t)
 
-      self.scenes[scene_n] = {
-        "filesize": 0,
-        "frames": num_frames,
-        "encoder_params": ""
-      }
-      
-      encoded_filename = self.get_encoded_filename(scene_n)
+    for t in ffmpeg_threads:
+      t.join()
 
-      file_ivf = os.path.join(self.path_encode, encoded_filename)
-      
-      if os.path.isfile(file_ivf):
-        self.scenes[scene_n]["filesize"] = os.stat(file_ivf).st_size
-        self.frames += num_frames
-        self.set_status(f"getting resume data: {self.frames}/{self.total_frames}")
-        continue
+    if self.input_total_frames == self.total_frames:
+      for scene in scene_filenames:
+        scene_n = str(os.path.splitext(scene)[0])
+        if self.scenes[scene_n]["filesize"] > 0 or "bad" in self.scenes[scene_n]:
+          continue
 
-      if scene_n in self.scene_settings:
-        self.scenes[scene_n]["encoder_params"] = self.scene_settings[scene_n]
-        scene_setting = self.scene_settings[scene_n]
-      else:
-        scene_setting = f"{self.encoder_params}"
+        encoded_filename = self.get_encoded_filename(scene_n)
 
-      self.jobs[scene_n] = Job(
-        self.encoder,
-        os.path.join(self.path_split, scene),
-        encoded_filename,
-        self.projectid,
-        self.priority,
-        scene_setting,
-        num_frames
-      )
+        if scene_n in self.scene_settings:
+          self.scenes[scene_n]["encoder_params"] = self.scene_settings[scene_n]
+          scene_setting = self.scene_settings[scene_n]
+        else:
+          scene_setting = f"{self.encoder_params}"
 
-    self.log.append("finished loading")
-    self.set_status("ready")
+        self.jobs[scene_n] = Job(
+          self.encoder,
+          os.path.join(self.path_split, scene),
+          encoded_filename,
+          self.projectid,
+          self.priority,
+          scene_setting,
+          self.scenes[scene_n]["frames"]
+        )
+
+      self.log.append("finished loading")
+      self.set_status("ready")
+    else:
+      print("total frame mismatch")
+      self.set_status("total frame mismatch")
+
     if os.path.isfile(self.path_out):
       self.set_status("complete")
     else:
@@ -299,11 +334,12 @@ def receive():
   os.makedirs(project.path_encode, exist_ok=True)
   file.save(encoded)
   
-  if scene["frames"] != get_frames(encoded):
+  encoded_frames = get_frames(encoded)
+  if scene["frames"] != encoded_frames:
     os.remove(encoded)
     if sender in job.workers:
       job.workers.remove(sender)
-    print("discard", projectid, scene_number, "frame mismatch")
+    print("discard", projectid, scene_number, "frame mismatch", encoded_frames, scene["frames"])
     return "bad framecount", 200
 
   scene["filesize"] = os.stat(encoded).st_size
@@ -360,10 +396,6 @@ def add_project():
 
   if "input" not in content or not os.path.isfile(content["input"]): return ""
 
-  min_frames = request.form["min_frames"]
-  max_frames = request.form["max_frames"]
-  scene_factor = int(request.form["scene_factor"])
-
   new_project = Project(
     content["input"],
     content["encoder"],
@@ -381,6 +413,7 @@ def add_project():
 
   return json.dumps({"success": True, "projectid": new_project.projectid})
 
+ffmpeg_pool = 0
 if __name__ == "__main__":
   import argparse
 

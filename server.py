@@ -40,8 +40,6 @@ class Project:
     
     self.total_frames = 0
 
-    self.input_total_frames = get_frames(self.path_in)
-
     self.frames = 0
     self.encoded_frames = 0
     self.encode_start = None
@@ -78,6 +76,9 @@ class Project:
 
   def start(self):
     global ffmpeg_pool
+    
+    self.input_total_frames = get_frames(self.path_in)
+
     if not os.path.isdir(self.path_split) or len(os.listdir(self.path_split)) == 0:
       self.log.append("splitting")
       self.set_status("splitting")
@@ -386,24 +387,24 @@ def modify_project(projectid):
 def add_project():
   content = request.json
 
-  if "input" not in content or not os.path.isfile(content["input"]): return ""
+  for input_file in content["input"]:
+    if not os.path.isfile(input_file): continue
 
-  new_project = Project(
-    content["input"],
-    content["encoder"],
-    content["encoder_params"],
-    content["threshold"],
-    content["min_frames"],
-    content["max_frames"],
-    {})
+    new_project = Project(
+      input_file,
+      content["encoder"],
+      content["encoder_params"],
+      content["threshold"],
+      content["min_frames"],
+      content["max_frames"],
+      {})
 
-  projects[new_project.projectid] = new_project
+    projects[new_project.projectid] = new_project
+
+    Thread(target=lambda: new_project.start()).start()
 
   save_projects()
-
-  Thread(target=lambda: new_project.start()).start()
-
-  return json.dumps({"success": True, "projectid": new_project.projectid})
+  return json.dumps({"success": True})
 
 ffmpeg_pool = 0
 if __name__ == "__main__":

@@ -261,7 +261,7 @@ if __name__ == "__main__":
   import argparse
 
   parser = argparse.ArgumentParser()
-  parser.add_argument("target", type=str, nargs="?", default="https://encode.grass.moe")
+  parser.add_argument("target", type=str, nargs="?", default="https://encode.grass.moe/1")
   parser.add_argument("--vmaf-model-path", dest="vmaf_path", default="vmaf_v0.6.1.pkl" if os.name == "nt" else "")
   parser.add_argument("--workers", dest="workers", default=1)
   parser.add_argument("--threads", dest="threads", default=4)

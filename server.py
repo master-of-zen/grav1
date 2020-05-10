@@ -159,7 +159,9 @@ class Project:
       return scene_n + ".webm"
 
   def concat(self):
-    scenes = [os.path.join(self.path_encode, self.get_encoded_filename(os.path.splitext(scene)[0])).replace("\\", "/") for scene in self.scenes]
+    keys = list(self.scenes.keys())
+    keys.sort()
+    scenes = [os.path.join(self.path_encode, self.get_encoded_filename(os.path.splitext(scene)[0])).replace("\\", "/") for scene in keys]
     content = "\n".join([f"file '{scene}'" for scene in scenes])
     with tmp_file("w", content) as file:
       cmd = f"ffmpeg -hide_banner -f concat -safe 0 -y -i".split(" ")

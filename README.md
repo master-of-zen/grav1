@@ -3,17 +3,20 @@
 
 [eight megabyte encodes](https://grass.moe/8mb.html)
 
-### deps
+[web client](https://encode.grass.moe)
+
+### requirements
 server:
 ```
 flask
 flask-cors
 wsgiserver
 ```
-client:
+client:  
 ```
 requests
 ```
+client (system):
 ```
 curses
 ffmpeg
@@ -31,3 +34,5 @@ start webserver (default port: 7899)
 
 starting up a worker  
 `python grav1c.py http://target --workers=4`  
+
+access the server through the [web client](https://encode.grass.moe) (incomplete)

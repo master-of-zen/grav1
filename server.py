@@ -37,6 +37,7 @@ class Project:
     self.scenes = {}
     self.total_jobs = 0
     self.priority = priority
+    self.stopped = False
     
     self.total_frames = 0
 
@@ -96,6 +97,7 @@ class Project:
     for scene in scene_filenames:
       while ffmpeg_pool >= 4:
         pass
+      if self.stopped: return
       ffmpeg_pool += 1
       t = Thread(target=self.count_frames, args=(scene,), daemon=True)
       t.start()
@@ -104,6 +106,8 @@ class Project:
     for t in ffmpeg_threads:
       t.join()
 
+    if self.stopped: return
+    
     if self.input_total_frames == self.total_frames:
       for scene in scene_filenames:
         scene_n = str(os.path.splitext(scene)[0])
@@ -366,6 +370,7 @@ def delete_project(projectid):
   if projectid not in projects:
     return json.dumps({"success": False, "reason": "Project does not exist."})
 
+  projects[projectid].stopped = True
   del projects[projectid]
 
   return json.dumps({"success": True})

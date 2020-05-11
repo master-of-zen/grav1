@@ -119,7 +119,7 @@ def aom_encode(input, encoder_params, args, status_cb):
         if len(line) == 0 and pipe.poll() is not None:
           break
 
-        match = re.search(r"frame *([^ ]+?)/", line)
+        match = re.search(r"frame.*?\/([^ ]+?) ", line)
         if match:
           status_cb(f"aom pass: {pass_n} {print_progress(int(match.group(1)), total_frames)}")
       

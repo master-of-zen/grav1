@@ -23,6 +23,12 @@ ffmpeg
 aomenc (vmaf optional)
 ```
 
+### preview
+
+![client](https://github.com/wwww-wwww/grav1/raw/master/images/client.png)
+
+<img src="https://github.com/wwww-wwww/grav1/raw/master/images/website.png" width="600">
+
 ### usage
 
 this only supports aomenc and libvpx-vp9 provided by ffmpeg  

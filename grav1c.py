@@ -153,88 +153,101 @@ class Client:
     self.jobs = []
     self.lock = Lock()
 
-def work(client, status_cb):
-  lock_aquired = False
-  while True:
-    status_cb("waiting")
+class Worker:
+  def __init__(self, client):
+    self.status = ""
+    self.client = client
+    self.lock_aquired = False
+    self.thread = None
 
+  def start(self):
+    self.thread = Thread(target=lambda: self.work(), daemon=True)
+    self.thread.start()
+
+  def update_status(self, status):
+    self.status = status
+
+  def work(self):
     lock_aquired = False
-    client.lock.acquire()
-    lock_aquired = True
+    while True:
+      self.status = "waiting"
 
-    status_cb("downloading")
+      self.lock_aquired = False
+      self.client.lock.acquire()
+      self.lock_aquired = True
 
-    jobs_str = json.dumps([{"projectid": job.projectid, "scene": job.scene} for job in client.jobs])
+      self.status = "downloading"
 
-    try:
-      with requests.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3, stream=True) as r:
+      jobs_str = json.dumps([{"projectid": job.projectid, "scene": job.scene} for job in self.client.jobs])
 
-        if r.status_code != 200 or "success" not in r.headers or r.headers["success"] == "0":
-          for i in range(0, 15):
-            status_cb(f"waiting...{15-i:2d}")
-            time.sleep(1)
-          client.lock.release()
-          continue
+      try:
+        with requests.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3, stream=True) as r:
+          if r.status_code != 200 or "success" not in r.headers or r.headers["success"] == "0":
+            for i in range(0, 15):
+              self.status = f"waiting...{15-i:2d}"
+              time.sleep(1)
+            self.client.lock.release()
+            continue
 
-        job = type("", (), {})
-        job.id = r.headers["id"]
-        job.filename = r.headers["filename"]
-        job.scene = r.headers["scene"]
-        job.encoder = r.headers["encoder"]
-        job.encoder_params = r.headers["encoder_params"]
-        job.projectid = r.headers["projectid"]
-        client.jobs.append(job)
+          job = type("", (), {})
+          job.id = r.headers["id"]
+          job.filename = r.headers["filename"]
+          job.scene = r.headers["scene"]
+          job.encoder = r.headers["encoder"]
+          job.encoder_params = r.headers["encoder_params"]
+          job.projectid = r.headers["projectid"]
+          self.client.jobs.append(job)
 
-        client.lock.release()
-        lock_aquired = False
-        
-        with tmp_file("wb", r, job.filename, status_cb) as file:
-          if job.encoder == "vp9":
-            output = vp9_encode(file, job.encoder_params, client.args, status_cb)
-          elif job.encoder == "aom":
-            output = aom_encode(file, job.encoder_params, client.args, status_cb)
+          self.client.lock.release()
+          self.lock_aquired = False
+          
+          with tmp_file("wb", r, job.filename, self.update_status) as file:
+            if job.encoder == "vp9":
+              output = vp9_encode(file, job.encoder_params, client.args, self.update_status)
+            elif job.encoder == "aom":
+              output = aom_encode(file, job.encoder_params, client.args, self.update_status)
 
-          if output:
-            status_cb(f"uploading {job.projectid} {job.scene}")
-            with open(output, "rb") as file:
-              files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
-              while True:
+            if output:
+              self.status = f"uploading {job.projectid} {job.scene}"
+              with open(output, "rb") as file:
+                files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
+                while True:
+                  try:
+                    r = requests.post(
+                      self.client.args.target + "/finish_job",
+                      data={
+                        "id": job.id,
+                        "scene": job.scene,
+                        "projectid": job.projectid,
+                        "encoder": job.encoder,
+                        "encoder_params": job.encoder_params
+                      },
+                      files=files)
+                    break
+                  except:
+                    self.status = "unable to connect - trying again"
+                    time.sleep(1)
+
+                if r.text == "saved":
+                  self.client.completed += 1
+                else:
+                  self.client.failed += 1
+                  self.status = f"error {r.status_code}"
+                  time.sleep(1)
+                self.client.jobs.remove(job)
+
+              while os.path.isfile(output):
                 try:
-                  r = requests.post(client.args.target + "/finish_job", data={"id": job.id, "scene": job.scene, "projectid": job.projectid, "encoder": job.encoder, "encoder_params": job.encoder_params}, files=files)
-                  break
+                  os.remove(output)
                 except:
-                  status_cb("unable to connect - trying again")
                   time.sleep(1)
 
-              if r.text == "saved":
-                client.completed += 1
-              else:
-                client.failed += 1
-                status_cb(f"error {r.status_code}")
-                time.sleep(1)
-              client.jobs.remove(job)
-
-            while os.path.isfile(output):
-              try:
-                os.remove(output)
-              except:
-                time.sleep(1)
-
-    except:
-      for i in range(0, 15):
-        status_cb(f"waiting...{15-i:2d}")
-        time.sleep(1)
-      if lock_aquired:
-        client.lock.release()
-
-def do(i, client):
-  update_status(i, "starting")
-  time.sleep(0.1*i)
-  work(client, lambda msg: update_status(i, msg))
-
-worker_log = {}
-def update_status(i, msg):
-  worker_log[i] = msg
+      except:
+        for i in range(0, 15):
+          self.status = f"waiting...{15-i:2d}"
+          time.sleep(1)
+        if self.lock_aquired:
+          self.client.lock.release()
 
 def window(scr):
   from curses import curs_set
@@ -243,13 +256,13 @@ def window(scr):
   while True:
     alive = False if len(client.workers) > 0 else True
     for worker in client.workers:
-      if worker.is_alive():
+      if worker.thread.is_alive():
         alive = True
         break
 
     msg = []
-    for worker in worker_log:
-      msg.append(worker_log[worker])
+    for worker in client.workers:
+      msg.append(worker.status)
 
     scr.erase()
     scr.addstr(f"target: {args.target} workers: {args.workers} hit: {client.completed} miss: {client.failed}\n")
@@ -298,13 +311,14 @@ if __name__ == "__main__":
   client = Client(args)
 
   for i in range(0, int(args.workers)):
-    worker = Thread(target=do, args=(i, client), daemon=True)
+    client.workers.append(Worker(client))
+  
+  for worker in client.workers:
     worker.start()
-    client.workers.append(worker)
 
   if args.noui:
     for worker in client.workers:
-      worker.join()
+      worker.thread.join()
   else:
     from curses import wrapper
     wrapper(window)

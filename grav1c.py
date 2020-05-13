@@ -3,8 +3,6 @@
 
 import os, subprocess, re, contextlib, requests, time, json
 from tempfile import NamedTemporaryFile
-from zipfile import ZipFile
-from io import BytesIO
 from threading import Lock, Thread
 
 def print_progress(n, total, size=10, suffix=""):
@@ -85,7 +83,7 @@ def vp9_encode(input, encoder_params, args, status_cb):
     raise e
 
 def aom_encode(input, encoder_params, args, status_cb):
-  if len(client.args.vmaf_path) > 0:
+  if "vmaf" in encoder_params and len(client.args.vmaf_path) > 0:
     encoder_params = f"{encoder_params} --vmaf-model-path={client.args.vmaf_path}"
 
   output_filename = f"{input}.ivf"
@@ -278,6 +276,12 @@ def window(scr):
       break
   curs_set(1)
 
+windows_binaries = [
+  ("vmaf_v0.6.1.pkl", "https://raw.githubusercontent.com/Netflix/vmaf/master/model/vmaf_v0.6.1.pkl", "binary"),
+  ("vmaf_v0.6.1.pkl.model", "https://raw.githubusercontent.com/Netflix/vmaf/master/model/vmaf_v0.6.1.pkl.model", "binary"),
+  ("ffmpeg.exe", "https://f.grass.moe/f/Sy/ffmpeg.zip", "zip")
+]
+
 if __name__ == "__main__":
   import argparse
 
@@ -289,28 +293,33 @@ if __name__ == "__main__":
   parser.add_argument("--noui", action="store_const", const=True)
 
   args = parser.parse_args()
-
+  
   if os.name == "nt":
     if not os.path.isfile("aomenc.exe"):
-      print("aomenc is missing, downloading...")
-      r = requests.get("https://f.grass.moe/f/Sz/aom.zip")
-      zipdata = BytesIO()
-      zipdata.write(r.content)
-      zipfile = ZipFile(zipdata)
-      for zipinfo in zipfile.filelist:
-        with zipfile.open(zipinfo.filename) as f:
-          with open(zipinfo.filename, "wb+") as new_file:
-            new_file.write(f.read())
-        
-    if not os.path.isfile("ffmpeg.exe"):
-      print("ffmpeg is missing, downloading...")
-      r = requests.get("https://f.grass.moe/f/Sy/ffmpeg.zip")
-      zipdata = BytesIO()
-      zipdata.write(r.content)
-      zipfile = ZipFile(zipdata)
-      with zipfile.open("ffmpeg.exe") as f_ffmpeg:
-        with open("ffmpeg.exe", "wb+") as f:
-          f.write(f_ffmpeg.read())
+      with requests.get("https://ci.appveyor.com/api/projects/Randomderp/aom") as r:
+        latest_job = r.json()["build"]["jobs"][0]["jobId"]
+        windows_binaries.append(("aomenc.exe", f"https://ci.appveyor.com/api/buildjobs/{latest_job}/artifacts/aom.zip", "zip"))
+    
+    for file in windows_binaries:
+      if not os.path.isfile(file[0]):
+        print(file[0], "is missing, downloading...")
+
+        r = requests.get(file[1])
+
+        if file[2] == "binary":
+          with open(file[0], "wb+") as f:
+            f.write(r.content)
+
+        if file[2] == "zip":
+          print("unpacking")
+          from zipfile import ZipFile
+          from io import BytesIO
+          zipdata = BytesIO()
+          zipdata.write(r.content)
+          zipfile = ZipFile(zipdata)
+          with zipfile.open(file[0]) as file_in_zip:
+            with open(file[0], "wb+") as f:
+              f.write(file_in_zip.read())
 
   client = Client(args)
 

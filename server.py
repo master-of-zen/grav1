@@ -355,7 +355,7 @@ def receive():
 
   if len(project.jobs) == 0 and project.frames == project.total_frames:
     print("done", projectid)
-    Thread(target=lambda: project.complete()).start()
+    Thread(target=lambda: project.complete(), daemon=True).start()
     
   return "saved", 200
 
@@ -408,7 +408,7 @@ def add_project():
 
     projects[new_project.projectid] = new_project
 
-    Thread(target=lambda: new_project.start()).start()
+    Thread(target=lambda: new_project.start(), daemon=True).start()
 
   save_projects()
   return json.dumps({"success": True})
@@ -422,7 +422,7 @@ if __name__ == "__main__":
   args = parser.parse_args()
 
   projects = {}
-  Thread(target=load_projects).start()
+  Thread(target=load_projects, daemon=True).start()
 
   print("listening on port", args.port)
   WSGIServer(app, port=args.port).start()

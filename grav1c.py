@@ -5,6 +5,7 @@ import os, subprocess, re, contextlib, requests, time, json
 from tempfile import NamedTemporaryFile
 from zipfile import ZipFile
 from io import BytesIO
+from threading import Lock
 
 def print_progress(n, total, size=10, suffix=""):
   fill = "█" * int((n / total) * size)
@@ -18,12 +19,18 @@ def get_frames(input):
   return int(re.search(r"frame= *([^ ]+?) ", r.stderr.decode("utf-8") + r.stdout.decode("utf-8")).group(1))
 
 @contextlib.contextmanager
-def tmp_file(mode, content, suffix=""):
+def tmp_file(mode, stream, suffix, cb):
   try:
     file = NamedTemporaryFile(mode=mode, suffix=suffix, dir=".", delete=False)
-    file.write(content)
-    file.flush()
     tmp_name = file.name
+    downloaded = 0
+    total_size = int(stream.headers["content-length"])
+    for chunk in stream.iter_content(chunk_size=8192):
+      if chunk:
+        downloaded = downloaded + len(chunk)
+        cb(f"downloading {print_progress(downloaded, total_size)}")
+        file.write(chunk)
+    file.flush()
     file.close()
     yield tmp_name
   finally:
@@ -144,84 +151,82 @@ class Client:
     self.completed = 0
     self.failed = 0
     self.jobs = []
-    self.locked = False
+    self.lock = Lock()
 
 def work(client, status_cb):
+  lock_aquired = False
   while True:
     status_cb("waiting")
 
-    while client.locked:
-      pass
-
-    client.locked = True
+    client.lock.acquire()
+    lock_aquired = True
 
     status_cb("downloading")
 
     jobs_str = json.dumps([{"projectid": job.projectid, "scene": job.scene} for job in client.jobs])
 
     try:
-      r = requests.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3)
-    except:
+      with requests.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3, stream=True) as r:
+
+        if r.status_code != 200 or "success" not in r.headers or r.headers["success"] == "0":
+          for i in range(0, 15):
+            status_cb(f"waiting...{15-i:2d}")
+            time.sleep(1)
+          client.lock.release()
+          continue
+
+        job = type("", (), {})
+        job.id = r.headers["id"]
+        job.filename = r.headers["filename"]
+        job.scene = r.headers["scene"]
+        job.encoder = r.headers["encoder"]
+        job.encoder_params = r.headers["encoder_params"]
+        job.projectid = r.headers["projectid"]
+        client.jobs.append(job)
+
+        client.lock.release()
+        
+        with tmp_file("wb", r, job.filename, status_cb) as file:
+          if job.encoder == "vp9":
+            output = vp9_encode(file, job.encoder_params, client.args, status_cb)
+          elif job.encoder == "aom":
+            output = aom_encode(file, job.encoder_params, client.args, status_cb)
+
+          if output:
+            status_cb(f"uploading {job.projectid} {job.scene}")
+            with open(output, "rb") as file:
+              files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
+              while True:
+                try:
+                  r = requests.post(client.args.target + "/finish_job", data={"id": job.id, "scene": job.scene, "projectid": job.projectid, "encoder": job.encoder, "encoder_params": job.encoder_params}, files=files)
+                  break
+                except:
+                  status_cb("unable to connect - trying again")
+                  time.sleep(1)
+
+              if r.text == "saved":
+                client.completed += 1
+              else:
+                client.failed += 1
+                status_cb(f"error {r.status_code}")
+                time.sleep(1)
+              client.jobs.remove(job)
+
+            while os.path.isfile(output):
+              try:
+                os.remove(output)
+              except:
+                time.sleep(1)
+        time.sleep(1)
+
+    except Exception as e:
+      status_cb(e.msg)
+      time.sleep(10)
       for i in range(0, 15):
         status_cb(f"waiting...{15-i:2d}")
         time.sleep(1)
-      client.locked = False
-      continue
-
-    if r.status_code != 200 or "success" not in r.headers or r.headers["success"] == "0":
-      for i in range(0, 15):
-        status_cb(f"waiting...{15-i:2d}")
-        time.sleep(1)
-      client.locked = False
-      continue
-
-    status_cb(f"downloaded {len(r.content)}")
-
-    job = type("", (), {})
-    job.id = r.headers["id"]
-    job.filename = r.headers["filename"]
-    job.scene = r.headers["scene"]
-    job.encoder = r.headers["encoder"]
-    job.encoder_params = r.headers["encoder_params"]
-    job.projectid = r.headers["projectid"]
-    job.content = r.content
-    client.jobs.append(job)
-
-    client.locked = False
-    
-    with tmp_file("wb", job.content, job.filename) as file:
-      if job.encoder == "vp9":
-        output = vp9_encode(file, job.encoder_params, client.args, status_cb)
-      elif job.encoder == "aom":
-        output = aom_encode(file, job.encoder_params, client.args, status_cb)
-
-      if output:
-        status_cb(f"uploading {job.projectid} {job.scene}")
-        with open(output, "rb") as file:
-          files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
-          while True:
-            try:
-              r = requests.post(client.args.target + "/finish_job", data={"id": job.id, "scene": job.scene, "projectid": job.projectid, "encoder": job.encoder, "encoder_params": job.encoder_params}, files=files)
-              break
-            except:
-              status_cb("unable to connect - trying again")
-              time.sleep(1)
-
-          if r.text == "saved":
-            client.completed += 1
-          else:
-            client.failed += 1
-            status_cb(f"error {r.status_code}")
-            time.sleep(1)
-          client.jobs.remove(job)
-
-        while os.path.isfile(output):
-          try:
-            os.remove(output)
-          except:
-            time.sleep(1)
-
-    time.sleep(1)
+      if lock_aquired:
+        client.lock.release()
 
 def do(i, client):
   update_status(i, "starting")

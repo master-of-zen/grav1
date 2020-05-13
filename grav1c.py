@@ -168,7 +168,6 @@ class Worker:
     self.status = status
 
   def work(self):
-    lock_aquired = False
     while True:
       self.status = "waiting"
 

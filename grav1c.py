@@ -172,7 +172,7 @@ class Worker:
     while True:
       self.status = "waiting"
 
-      if self.job is not None:
+      if self.job is not None and self.job in self.client.jobs:
         self.client.jobs.remove(self.job)
 
       if not self.lock_aquired:
@@ -239,7 +239,6 @@ class Worker:
                   self.client.failed += 1
                   self.status = f"error {r.status_code}"
                   time.sleep(1)
-                self.client.jobs.remove(self.job)
 
               while os.path.isfile(output):
                 try:
@@ -247,6 +246,9 @@ class Worker:
                 except:
                   time.sleep(1)
 
+          self.client.jobs.remove(self.job)
+          self.job = None
+          
       except:
         for i in range(0, 15):
           self.status = f"waiting...{15-i:2d}"

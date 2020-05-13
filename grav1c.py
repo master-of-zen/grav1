@@ -170,7 +170,7 @@ class Worker:
 
   def work(self):
     while True:
-      self.status = "waiting"
+      self.update_status("waiting")
 
       if self.job is not None and self.job in self.client.jobs:
         self.client.jobs.remove(self.job)
@@ -179,7 +179,7 @@ class Worker:
         self.client.lock.acquire()
         self.lock_aquired = True
 
-      self.status = "downloading"
+      self.update_status("downloading")
 
       jobs_str = json.dumps([{"projectid": job.projectid, "scene": job.scene} for job in self.client.jobs])
 
@@ -189,10 +189,12 @@ class Worker:
         with requests.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3, stream=True) as r:
           if r.status_code != 200 or "success" not in r.headers or r.headers["success"] == "0":
             for i in range(0, 15):
-              self.status = f"waiting...{15-i:2d}"
+              self.update_status(f"waiting...{15-i:2d}")
               time.sleep(1)
-            self.client.lock.release()
             continue
+
+          self.client.lock.release()
+          self.lock_aquired = False
 
           self.job = type("", (), {})
           self.job.id = r.headers["id"]
@@ -203,9 +205,6 @@ class Worker:
           self.job.projectid = r.headers["projectid"]
           self.client.jobs.append(self.job)
 
-          self.client.lock.release()
-          self.lock_aquired = False
-          
           with tmp_file("wb", r, self.job.filename, self.update_status) as file:
             if self.job.encoder == "vp9":
               output = vp9_encode(file, self.job.encoder_params, client.args, self.update_status)
@@ -213,7 +212,7 @@ class Worker:
               output = aom_encode(file, self.job.encoder_params, client.args, self.update_status)
 
             if output:
-              self.status = f"uploading {self.job.projectid} {self.job.scene}"
+              self.update_status(f"uploading {self.job.projectid} {self.job.scene}")
               with open(output, "rb") as file:
                 files = [("file", (os.path.splitext(self.job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
                 while True:
@@ -230,14 +229,14 @@ class Worker:
                       files=files)
                     break
                   except:
-                    self.status = "unable to connect - trying again"
+                    self.update_status("unable to connect - trying again")
                     time.sleep(1)
 
                 if r.text == "saved":
                   self.client.completed += 1
                 else:
                   self.client.failed += 1
-                  self.status = f"error {r.status_code}"
+                  self.update_status(f"error {r.status_code}")
                   time.sleep(1)
 
               while os.path.isfile(output):
@@ -251,7 +250,7 @@ class Worker:
           
       except:
         for i in range(0, 15):
-          self.status = f"waiting...{15-i:2d}"
+          self.update_status(f"waiting...{15-i:2d}")
           time.sleep(1)
 
 def window(scr):

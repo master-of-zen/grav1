@@ -5,7 +5,7 @@ import os, subprocess, re, contextlib, requests, time, json
 from tempfile import NamedTemporaryFile
 from zipfile import ZipFile
 from io import BytesIO
-from threading import Lock
+from threading import Lock, Thread
 
 def print_progress(n, total, size=10, suffix=""):
   fill = "█" * int((n / total) * size)
@@ -158,6 +158,7 @@ def work(client, status_cb):
   while True:
     status_cb("waiting")
 
+    lock_aquired = False
     client.lock.acquire()
     lock_aquired = True
 
@@ -185,6 +186,7 @@ def work(client, status_cb):
         client.jobs.append(job)
 
         client.lock.release()
+        lock_aquired = False
         
         with tmp_file("wb", r, job.filename, status_cb) as file:
           if job.encoder == "vp9":
@@ -217,11 +219,8 @@ def work(client, status_cb):
                 os.remove(output)
               except:
                 time.sleep(1)
-        time.sleep(1)
 
-    except Exception as e:
-      status_cb(e.msg)
-      time.sleep(10)
+    except:
       for i in range(0, 15):
         status_cb(f"waiting...{15-i:2d}")
         time.sleep(1)
@@ -295,8 +294,6 @@ if __name__ == "__main__":
       with zipfile.open("ffmpeg.exe") as f_ffmpeg:
         with open("ffmpeg.exe", "wb+") as f:
           f.write(f_ffmpeg.read())
-
-  from threading import Thread
 
   client = Client(args)
 

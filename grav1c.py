@@ -159,6 +159,7 @@ class Worker:
     self.client = client
     self.lock_aquired = False
     self.thread = None
+    self.job = None
 
   def start(self):
     self.thread = Thread(target=lambda: self.work(), daemon=True)
@@ -171,13 +172,18 @@ class Worker:
     while True:
       self.status = "waiting"
 
-      self.lock_aquired = False
-      self.client.lock.acquire()
-      self.lock_aquired = True
+      if self.job is not None:
+        self.client.jobs.remove(self.job)
+
+      if not self.lock_aquired:
+        self.client.lock.acquire()
+        self.lock_aquired = True
 
       self.status = "downloading"
 
       jobs_str = json.dumps([{"projectid": job.projectid, "scene": job.scene} for job in self.client.jobs])
+
+      self.job = None
 
       try:
         with requests.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3, stream=True) as r:
@@ -188,38 +194,38 @@ class Worker:
             self.client.lock.release()
             continue
 
-          job = type("", (), {})
-          job.id = r.headers["id"]
-          job.filename = r.headers["filename"]
-          job.scene = r.headers["scene"]
-          job.encoder = r.headers["encoder"]
-          job.encoder_params = r.headers["encoder_params"]
-          job.projectid = r.headers["projectid"]
-          self.client.jobs.append(job)
+          self.job = type("", (), {})
+          self.job.id = r.headers["id"]
+          self.job.filename = r.headers["filename"]
+          self.job.scene = r.headers["scene"]
+          self.job.encoder = r.headers["encoder"]
+          self.job.encoder_params = r.headers["encoder_params"]
+          self.job.projectid = r.headers["projectid"]
+          self.client.jobs.append(self.job)
 
           self.client.lock.release()
           self.lock_aquired = False
           
-          with tmp_file("wb", r, job.filename, self.update_status) as file:
-            if job.encoder == "vp9":
-              output = vp9_encode(file, job.encoder_params, client.args, self.update_status)
-            elif job.encoder == "aom":
-              output = aom_encode(file, job.encoder_params, client.args, self.update_status)
+          with tmp_file("wb", r, self.job.filename, self.update_status) as file:
+            if self.job.encoder == "vp9":
+              output = vp9_encode(file, self.job.encoder_params, client.args, self.update_status)
+            elif self.job.encoder == "aom":
+              output = aom_encode(file, self.job.encoder_params, client.args, self.update_status)
 
             if output:
-              self.status = f"uploading {job.projectid} {job.scene}"
+              self.status = f"uploading {self.job.projectid} {self.job.scene}"
               with open(output, "rb") as file:
-                files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
+                files = [("file", (os.path.splitext(self.job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
                 while True:
                   try:
                     r = requests.post(
                       self.client.args.target + "/finish_job",
                       data={
-                        "id": job.id,
-                        "scene": job.scene,
-                        "projectid": job.projectid,
-                        "encoder": job.encoder,
-                        "encoder_params": job.encoder_params
+                        "id": self.job.id,
+                        "scene": self.job.scene,
+                        "projectid": self.job.projectid,
+                        "encoder": self.job.encoder,
+                        "encoder_params": self.job.encoder_params
                       },
                       files=files)
                     break
@@ -233,7 +239,7 @@ class Worker:
                   self.client.failed += 1
                   self.status = f"error {r.status_code}"
                   time.sleep(1)
-                self.client.jobs.remove(job)
+                self.client.jobs.remove(self.job)
 
               while os.path.isfile(output):
                 try:
@@ -245,8 +251,6 @@ class Worker:
         for i in range(0, 15):
           self.status = f"waiting...{15-i:2d}"
           time.sleep(1)
-        if self.lock_aquired:
-          self.client.lock.release()
 
 def window(scr):
   from curses import curs_set

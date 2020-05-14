@@ -81,13 +81,6 @@ class Project:
       scene_n = str(os.path.splitext(scene)[0])
       num_frames = get_frames(os.path.join(self.path_split, scene))
       num_frames_slow = get_frames(os.path.join(self.path_split, scene), False)
-
-      self.total_frames += num_frames
-      self.scenes[scene_n] = {
-        "filesize": 0,
-        "frames": num_frames,
-        "encoder_params": ""
-      }
       
       if num_frames_slow != num_frames:
         print("bad framecount", self.projectid, scene, "supposed to be:", num_frames, "got:", num_frames_slow)
@@ -101,6 +94,12 @@ class Project:
         else:
           self.scenes[scene_n]["bad"] = f"bad framecount, supposed to be: {num_frames}, got: {num_frames_slow}"
       
+      self.total_frames += num_frames
+      self.scenes[scene_n] = {
+        "filesize": 0,
+        "frames": num_frames,
+        "encoder_params": ""
+      }
       self.set_status(f"verifying split {i}/{len(scene_filenames)}")
 
   def start(self):

@@ -193,9 +193,6 @@ class Worker:
               time.sleep(1)
             continue
 
-          self.client.lock.release()
-          self.lock_aquired = False
-
           self.job = type("", (), {})
           self.job.id = r.headers["id"]
           self.job.filename = r.headers["filename"]
@@ -204,6 +201,9 @@ class Worker:
           self.job.encoder_params = r.headers["encoder_params"]
           self.job.projectid = r.headers["projectid"]
           self.client.jobs.append(self.job)
+
+          self.client.lock.release()
+          self.lock_aquired = False
 
           with tmp_file("wb", r, self.job.filename, self.update_status) as file:
             if self.job.encoder == "vp9":

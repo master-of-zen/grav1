@@ -150,6 +150,7 @@ class Client:
     self.failed = 0
     self.jobs = []
     self.lock = Lock()
+    self.session = requests.Session()
 
 class Worker:
   def __init__(self, client):
@@ -164,6 +165,7 @@ class Worker:
     self.thread.start()
 
   def update_status(self, status):
+    print(status)
     self.status = status
 
   def work(self):
@@ -184,7 +186,7 @@ class Worker:
       self.job = None
 
       try:
-        with requests.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3, stream=True) as r:
+        with self.client.session.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3, stream=True) as r:
           if r.status_code != 200 or "success" not in r.headers or r.headers["success"] == "0":
             for i in range(0, 15):
               self.update_status(f"waiting...{15-i:2d}")
@@ -208,14 +210,14 @@ class Worker:
               output = vp9_encode(file, self.job.encoder_params, client.args, self.update_status)
             elif self.job.encoder == "aom":
               output = aom_encode(file, self.job.encoder_params, client.args, self.update_status)
-
+              
             if output:
               self.update_status(f"uploading {self.job.projectid} {self.job.scene}")
               with open(output, "rb") as file:
                 files = [("file", (os.path.splitext(self.job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
                 while True:
                   try:
-                    r = requests.post(
+                    r = self.client.session.post(
                       self.client.args.target + "/finish_job",
                       data={
                         "id": self.job.id,
@@ -246,7 +248,8 @@ class Worker:
           self.client.jobs.remove(self.job)
           self.job = None
           
-      except:
+      except Exception as e:
+        raise e
         for i in range(0, 15):
           self.update_status(f"waiting...{15-i:2d}")
           time.sleep(1)

@@ -92,6 +92,7 @@ class Project:
         if get_frames(os.path.join(self.path_split, scene), False) == num_frames:
           print("corrected", self.projectid, scene)
         else:
+          print("failed to correct", self.projectid, scene)
           self.scenes[scene_n]["bad"] = f"bad framecount, supposed to be: {num_frames}, got: {num_frames_slow}"
       
       self.total_frames += num_frames

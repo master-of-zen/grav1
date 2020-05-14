@@ -38,6 +38,7 @@ class Project:
     self.total_jobs = 0
     self.priority = priority
     self.stopped = False
+    self.input_total_frames = 0
     self.framerate = 24000 / 1001
     
     self.total_frames = 0
@@ -94,6 +95,11 @@ class Project:
         cmd.extend(f"-crf 1 -qmin 0 -qmax 1 -an -y".split(" "))
         cmd.append(os.path.join(self.path_split, scene))
         ffmpeg(cmd, None)
+
+        if get_frames(os.path.join(self.path_split, scene), False) == num_frames:
+          print("corrected", self.projectid, scene)
+        else:
+          self.scenes[scene_n]["bad"] = f"bad framecount, supposed to be: {num_frames}, got: {num_frames_slow}"
       
       self.set_status(f"verifying split {i}/{len(scene_filenames)}")
 
@@ -271,7 +277,7 @@ def get_projects():
     p["projectid"] = pid
     p["input"] = project.path_in
     p["frames"] = project.frames
-    p["total_frames"] = project.total_frames
+    p["total_frames"] = project.input_total_frames
     p["fps"] = project.fps
     p["jobs"] = len(project.jobs)
     p["total_jobs"] = project.total_jobs

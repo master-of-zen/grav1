@@ -50,16 +50,17 @@ class Project:
     global ffmpeg_pool
     scene_n = str(os.path.splitext(scene)[0])
 
-    num_frames = get_frames(os.path.join(self.path_split, scene))
+    if scene_n not in self.scenes:
+      num_frames = get_frames(os.path.join(self.path_split, scene))
 
-    self.total_frames += num_frames
+      self.total_frames += num_frames
 
-    self.scenes[scene_n] = {
-      "filesize": 0,
-      "frames": num_frames,
-      "encoder_params": ""
-    }
-    
+      self.scenes[scene_n] = {
+        "filesize": 0,
+        "frames": num_frames,
+        "encoder_params": ""
+      }
+      
     encoded_filename = self.get_encoded_filename(scene_n)
 
     file_ivf = os.path.join(self.path_encode, encoded_filename)
@@ -67,13 +68,33 @@ class Project:
     if os.path.isfile(file_ivf):
       self.scenes[scene_n]["filesize"] = os.stat(file_ivf).st_size
       self.frames += num_frames
-    else:
-      num_frames_slow = get_frames(os.path.join(self.path_split, scene), False)
-      if num_frames_slow != num_frames:
-        print("bad framecount", self.projectid, scene_n, "supposed to be:", num_frames, "got:", num_frames_slow)
-        self.scenes[scene_n]["bad"] = f"bad framecount, supposed to be: {num_frames}, got: {num_frames_slow}"
 
     ffmpeg_pool -= 1
+
+  def verify_split(self):
+    total_frames = 0
+    scene_filenames = os.listdir(self.path_split)
+
+    for i, scene in enumerate(scene_filenames, start=1):
+      scene_n = str(os.path.splitext(scene)[0])
+      num_frames = get_frames(os.path.join(self.path_split, scene))
+      num_frames_slow = get_frames(os.path.join(self.path_split, scene), False)
+
+      self.total_frames += num_frames
+      self.scenes[scene_n] = {
+        "filesize": 0,
+        "frames": num_frames,
+        "encoder_params": ""
+      }
+      
+      if num_frames_slow != num_frames:
+        print("bad framecount", self.projectid, scene, "supposed to be:", num_frames, "got:", num_frames_slow)
+        cmd = ["ffmpeg", "-i", self.path_in, "-ss", str((self.total_frames) / (self.framerate)), "-frames:v", str(num_frames)]
+        cmd.extend(f"-crf 1 -qmin 0 -qmax 1 -an -y".split(" "))
+        cmd.append(os.path.join(self.path_split, scene))
+        ffmpeg(cmd, None)
+      
+      self.set_status(f"verifying split {i}/{len(scene_filenames)}")
 
   def start(self):
     global ffmpeg_pool
@@ -81,16 +102,17 @@ class Project:
     self.input_total_frames = get_frames(self.path_in)
 
     if not os.path.isdir(self.path_split) or len(os.listdir(self.path_split)) == 0:
-      self.log.append("splitting")
-      self.set_status("splitting")
+      self.set_status("splitting", True)
       split(self.path_in, self.path_split, self.threshold, self.min_frames, self.max_frames)
+      self.set_status("verifying split", True)
+      self.verify_split()
 
     scene_filenames = os.listdir(self.path_split)
 
     self.total_jobs = len(scene_filenames)
 
     if os.path.isdir(self.path_encode):
-      self.log.append("getting resume data")
+      self.set_status("getting resume data", True)
     
     ffmpeg_threads = []
 
@@ -132,8 +154,7 @@ class Project:
           self.scenes[scene_n]["frames"]
         )
 
-      self.log.append("finished loading")
-      self.set_status("ready")
+      self.set_status("ready", True)
     else:
       print("total frame mismatch")
       self.set_status("total frame mismatch")
@@ -145,7 +166,7 @@ class Project:
 
   def complete(self):
     if len(self.jobs) == 0 and self.frames == self.total_frames:
-      self.log.append("done! joining files")
+      self.set_status("done! joining files", True)
       self.concat()
       self.set_status("complete")
 
@@ -153,7 +174,9 @@ class Project:
     if self.encode_start: self.fps = self.encoded_frames / max(time() - self.encode_start, 1)
     else: self.fps = 0
 
-  def set_status(self, msg):
+  def set_status(self, msg, log=False):
+    if log:
+      self.log.append(msg)
     self.status = msg
 
   def get_encoded_filename(self, scene_n):

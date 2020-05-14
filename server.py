@@ -38,6 +38,7 @@ class Project:
     self.total_jobs = 0
     self.priority = priority
     self.stopped = False
+    self.framerate = 24000 / 1001
     
     self.total_frames = 0
 

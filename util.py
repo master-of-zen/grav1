@@ -74,7 +74,6 @@ def split(video, path_split, threshold, min_frames, max_frames):
     "-map", "0:v:0",
     "-an",
     "-c", "copy",
-    #"-crf", "13",
     "-avoid_negative_ts", "1"
   ]
   

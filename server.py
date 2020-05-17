@@ -52,16 +52,11 @@ class Project:
     global ffmpeg_pool
     scene_n = str(os.path.splitext(scene)[0])
 
-    if scene_n not in self.scenes:
+    if not self.scenes[scene_n]["frames"]:
       num_frames = get_frames(os.path.join(self.path_split, scene))
 
       self.total_frames += num_frames
-
-      self.scenes[scene_n] = {
-        "filesize": 0,
-        "frames": num_frames,
-        "encoder_params": ""
-      }
+      self.scenes[scene_n]["frames"] = num_frames
       
     encoded_filename = self.get_encoded_filename(scene_n)
 
@@ -124,10 +119,19 @@ class Project:
     ffmpeg_threads = []
 
     for scene in scene_filenames:
+      scene_n = str(os.path.splitext(scene)[0])
       while ffmpeg_pool >= 4:
         pass
       if self.stopped: return
       ffmpeg_pool += 1
+      
+      if scene_n not in self.scenes:
+        self.scenes[scene_n] = {
+          "filesize": 0,
+          "frames": 0,
+          "encoder_params": ""
+        }
+
       t = Thread(target=self.count_frames, args=(scene,), daemon=True)
       t.start()
       ffmpeg_threads.append(t)

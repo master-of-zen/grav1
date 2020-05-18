@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# lightweight client-only for encoding
 
 import os, subprocess, re, contextlib, requests, time, json
 from tempfile import NamedTemporaryFile
@@ -14,7 +13,11 @@ def get_frames(input):
   cmd = f"ffmpeg -hide_banner -map 0:v:0 -c copy -f null {os.devnull} -i".split(" ")
   cmd.append(input)
   r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-  return int(re.search(r"frame= *([^ ]+?) ", r.stderr.decode("utf-8") + r.stdout.decode("utf-8")).group(1))
+  match = re.search(r"frame= *([^ ]+?) ", r.stderr.decode("utf-8") + r.stdout.decode("utf-8"))
+  if match:
+    return int(match.group(1))
+  else:
+    return None
 
 @contextlib.contextmanager
 def tmp_file(mode, stream, suffix, cb):
@@ -34,7 +37,7 @@ def tmp_file(mode, stream, suffix, cb):
   finally:
     os.unlink(tmp_name)
 
-def vp9_encode(input, encoder_params, args, status_cb):
+def vp9_encode(worker, input, encoder_params, args, status_cb):
   output_filename = f"{input}.webm"
 
   vp9 = f"ffmpeg -y -hide_banner".split(" ")
@@ -46,45 +49,42 @@ def vp9_encode(input, encoder_params, args, status_cb):
   ]]
 
   total_frames = get_frames(input)
+  if total_frames is None: return False
 
-  pipe = None
+  success = True
+  for pass_n, cmd in enumerate(passes, start=1):
+    worker.pipe = subprocess.Popen(cmd,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.STDOUT,
+      universal_newlines=True)
 
-  try:
-    for pass_n, cmd in enumerate(passes, start=1):
-      pipe = subprocess.Popen(cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        universal_newlines=True)
+    status_cb(f"vp9 pass: {pass_n} {print_progress(0, total_frames)}")
 
-      status_cb(f"vp9 pass: {pass_n} {print_progress(0, total_frames)}")
+    while True:
+      line = worker.pipe.stdout.readline().strip()
 
-      while True:
-        line = pipe.stdout.readline().strip()
+      if len(line) == 0 and worker.pipe.poll() is not None:
+        break
 
-        if len(line) == 0 and pipe.poll() is not None:
-          break
+      matches = re.findall(r"frame= *([^ ]+?) ", line)
+      if matches:
+        status_cb(f"vp9 pass: {pass_n} {print_progress(int(matches[-1]), total_frames)}")
+    
+    if worker.pipe.returncode != 0:
+      status_cb("error")
+      success = False
 
-        matches = re.findall(r"frame= *([^ ]+?) ", line)
-        if matches:
-          status_cb(f"vp9 pass: {pass_n} {print_progress(int(matches[-1]), total_frames)}")
-      
-      if pipe.returncode != 0:
-        status_cb("error")
-        return False
+  if os.path.isfile(f"{input}.log-0.log"):
+    os.remove(f"{input}.log-0.log")
 
-    if os.path.isfile(f"{input}.log-0.log"):
-      os.remove(f"{input}.log-0.log")
-
+  if success:
     return output_filename
-  except Exception as e:
-    print("killing worker")
-    if pipe:
-      pipe.kill()
-    raise e
+  else:
+    return False
 
-def aom_encode(input, encoder_params, args, status_cb):
-  if "vmaf" in encoder_params and len(client.args.vmaf_path) > 0:
-    encoder_params = f"{encoder_params} --vmaf-model-path={client.args.vmaf_path}"
+def aom_encode(worker, input, encoder_params, status_cb):
+  if "vmaf" in encoder_params and len(worker.client.args.vmaf_path) > 0:
+    encoder_params = f"{encoder_params} --vmaf-model-path={worker.client.args.vmaf_path}"
 
   output_filename = f"{input}.ivf"
 
@@ -101,51 +101,87 @@ def aom_encode(input, encoder_params, args, status_cb):
   ]]
 
   total_frames = get_frames(input)
+  if total_frames is None: return False
 
-  pipe = None
+  success = True
+  for pass_n, cmd in enumerate(passes, start=1):
+    ffmpeg_pipe = subprocess.Popen(ffmpeg,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.STDOUT)
 
-  try:
-    for pass_n, cmd in enumerate(passes, start=1):
-      ffmpeg_pipe = subprocess.Popen(ffmpeg,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT)
+    worker.pipe = subprocess.Popen(cmd,
+      stdin=ffmpeg_pipe.stdout,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.STDOUT,
+      universal_newlines=True)
 
-      pipe = subprocess.Popen(cmd,
-        stdin=ffmpeg_pipe.stdout,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        universal_newlines=True)
+    status_cb(f"aom pass: {pass_n} {print_progress(0, total_frames)}")
 
-      status_cb(f"aom pass: {pass_n} {print_progress(0, total_frames)}")
+    while True:
+      line = worker.pipe.stdout.readline().strip()
 
-      while True:
-        line = pipe.stdout.readline().strip()
+      if len(line) == 0 and worker.pipe.poll() is not None:
+        break
 
-        if len(line) == 0 and pipe.poll() is not None:
-          break
+      match = re.search(r"frame.*?\/([^ ]+?) ", line)
+      if match:
+        status_cb(f"aom pass: {pass_n} {print_progress(int(match.group(1)), total_frames)}")
+    
+    if worker.pipe.returncode != 0:
+      status_cb("error")
+      success = False
 
-        match = re.search(r"frame.*?\/([^ ]+?) ", line)
-        if match:
-          status_cb(f"aom pass: {pass_n} {print_progress(int(match.group(1)), total_frames)}")
-      
-      if pipe.returncode != 0:
-        status_cb("error")
-        return False
+  if os.path.isfile(f"{input}.log"):
+    os.remove(f"{input}.log")
 
-    if os.path.isfile(f"{input}.log"):
-      os.remove(f"{input}.log")
-
+  if success:
     return output_filename
-  except Exception as e:
-    print("killing worker")
-    if pipe:
-      pipe.kill()
-    raise e
+  else:
+    return False
+
+def fetch_new_job(client):
+  jobs_str = json.dumps([{"projectid": job.projectid, "scene": job.scene} for job in client.jobs])
+  try:
+    r = client.session.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3, stream=True)
+    if r.status_code != 200 or "success" not in r.headers or r.headers["success"] == "0":
+      return None
+
+    job = type("", (), {})
+    job.id = r.headers["id"]
+    job.filename = r.headers["filename"]
+    job.scene = r.headers["scene"]
+    job.encoder = r.headers["encoder"]
+    job.encoder_params = r.headers["encoder_params"]
+    job.projectid = r.headers["projectid"]
+    job.request = r
+    client.jobs.append(job)
+
+    return job
+  except:
+    return None
+
+def upload(client, job, file, output):
+  files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
+  try:
+    r = client.session.post(
+      client.args.target + "/finish_job",
+      data={
+        "id": job.id,
+        "scene": job.scene,
+        "projectid": job.projectid,
+        "encoder": job.encoder,
+        "encoder_params": job.encoder_params
+      },
+      files=files)
+    return r
+  except:
+    return False
 
 class Client:
   def __init__(self, args):
     self.args = args
     self.workers = []
+    self.numworkers = int(args.workers)
     self.completed = 0
     self.failed = 0
     self.jobs = []
@@ -159,13 +195,21 @@ class Worker:
     self.lock_aquired = False
     self.thread = None
     self.job = None
+    self.pipe = None
+    self.stopped = False
+
+  def kill(self):
+    self.stopped = True
+    if self.pipe:
+      self.pipe.kill()
 
   def start(self):
     self.thread = Thread(target=lambda: self.work(), daemon=True)
     self.thread.start()
 
   def update_status(self, status):
-    print(status)
+    if self.client.args.noui:
+      print(status)
     self.status = status
 
   def work(self):
@@ -181,103 +225,112 @@ class Worker:
 
       self.update_status("downloading")
 
-      jobs_str = json.dumps([{"projectid": job.projectid, "scene": job.scene} for job in self.client.jobs])
+      while True:
+        self.job = fetch_new_job(self.client)
+        if self.job: break
+        for i in range(0, 15):
+          if self.stopped: return
+          self.update_status(f"waiting...{15-i:2d}")
+          time.sleep(1)
 
-      self.job = None
+      self.client.lock.release()
+      self.lock_aquired = False
 
-      try:
-        with self.client.session.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3, stream=True) as r:
-          if r.status_code != 200 or "success" not in r.headers or r.headers["success"] == "0":
-            for i in range(0, 15):
-              self.update_status(f"waiting...{15-i:2d}")
-              time.sleep(1)
-            continue
+      with tmp_file("wb", self.job.request, self.job.filename, self.update_status) as file:
+        if self.job.encoder == "vp9":
+          output = vp9_encode(self, file, self.job.encoder_params, self.update_status)
+        elif self.job.encoder == "aom":
+          output = aom_encode(self, file, self.job.encoder_params, self.update_status)
+        else: return
 
-          self.job = type("", (), {})
-          self.job.id = r.headers["id"]
-          self.job.filename = r.headers["filename"]
-          self.job.scene = r.headers["scene"]
-          self.job.encoder = r.headers["encoder"]
-          self.job.encoder_params = r.headers["encoder_params"]
-          self.job.projectid = r.headers["projectid"]
-          self.client.jobs.append(self.job)
-
-          self.client.lock.release()
-          self.lock_aquired = False
-
-          with tmp_file("wb", r, self.job.filename, self.update_status) as file:
-            if self.job.encoder == "vp9":
-              output = vp9_encode(file, self.job.encoder_params, client.args, self.update_status)
-            elif self.job.encoder == "aom":
-              output = aom_encode(file, self.job.encoder_params, client.args, self.update_status)
-              
-            if output:
-              self.update_status(f"uploading {self.job.projectid} {self.job.scene}")
-              with open(output, "rb") as file:
-                files = [("file", (os.path.splitext(self.job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
-                while True:
-                  try:
-                    r = self.client.session.post(
-                      self.client.args.target + "/finish_job",
-                      data={
-                        "id": self.job.id,
-                        "scene": self.job.scene,
-                        "projectid": self.job.projectid,
-                        "encoder": self.job.encoder,
-                        "encoder_params": self.job.encoder_params
-                      },
-                      files=files)
-                    break
-                  except:
-                    self.update_status("unable to connect - trying again")
-                    time.sleep(1)
-
+        if output:
+          self.update_status(f"uploading {self.job.projectid} {self.job.scene}")
+          with open(output, "rb") as file:
+            while True:
+              r = upload(self.client, self.job, file, output)
+              if r:
                 if r.text == "saved":
                   self.client.completed += 1
                 else:
                   self.client.failed += 1
                   self.update_status(f"error {r.status_code}")
                   time.sleep(1)
+                break
+              else:
+                self.update_status("unable to connect - trying again")
+                time.sleep(1)
 
-              while os.path.isfile(output):
-                try:
-                  os.remove(output)
-                except:
-                  time.sleep(1)
+          while os.path.isfile(output):
+            try:
+              os.remove(output)
+            except:
+              time.sleep(1)
 
           self.client.jobs.remove(self.job)
           self.job = None
-          
-      except Exception as e:
-        raise e
-        for i in range(0, 15):
-          self.update_status(f"waiting...{15-i:2d}")
-          time.sleep(1)
+
+KEY_UP = 259
+KEY_DOWN = 258
+KEY_LEFT = 260
+KEY_RIGHT = 261
+KEY_RETURN = 10
 
 def window(scr):
-  from curses import curs_set
+  curses.curs_set(0)
   scr.nodelay(1)
-  curs_set(0)
-  while True:
-    alive = False if len(client.workers) > 0 else True
-    for worker in client.workers:
-      if worker.thread.is_alive():
-        alive = True
-        break
 
-    msg = []
-    for worker in client.workers:
-      msg.append(worker.status)
+  menu = type("", (), {})
+  menu.selected_item = 0
+  menu.items = ["add", "remove", "remove (f)", "quit"]
+  menu.scroll = 0
+  
+  curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
+
+  while True:
+    (mlines, mcols) = scr.getmaxyx()
+    y = 0
 
     scr.erase()
-    scr.addstr(f"target: {args.target} workers: {args.workers} hit: {client.completed} miss: {client.failed}\n")
-    scr.addstr("\n".join(msg))
+
+    for line in textwrap.wrap(f"target: {args.target} workers: {args.workers} hit: {client.completed} miss: {client.failed}", width=mcols):
+      scr.insstr(y, 0, line.ljust(mcols), curses.color_pair(1))
+      y += 1
+
+    msg = []
+    for i, worker in enumerate(client.workers, start=1):
+      msg.append(f"{i:2} {worker.status}")
+
+    for i, line in enumerate(msg[menu.scroll:mlines - y - 1 + menu.scroll]):
+      scr.insstr(y + i, 0, line)
+
+    line = " ".join([f"[{item}]" if i == menu.selected_item else f" {item} " for i, item in enumerate(menu.items)])
+    scr.insstr(mlines - 1, 0, line.ljust(mcols), curses.color_pair(1))
+    
     scr.refresh()
 
     c = scr.getch()
-    if not alive or c == 3:
-      break
-  curs_set(1)
+
+    if c == KEY_UP:
+      menu.scroll = max(menu.scroll - 1, 0)
+    elif c == KEY_DOWN:
+      menu.scroll = min(menu.scroll + 1, len(client.workers) - (mlines - y - 1))
+    elif c == KEY_LEFT:
+      menu.selected_item = max(menu.selected_item - 1, 0)
+    elif c == KEY_RIGHT:
+      menu.selected_item = min(menu.selected_item + 1, len(menu.items) - 1)
+    elif c == KEY_RETURN:
+      if menu.selected_item == 0:
+        pass
+      elif menu.selected_item == 1:
+        pass
+      elif menu.selected_item == 2:
+        pass
+      elif menu.selected_item == 3:
+        for worker in client.workers:
+          worker.kill()
+        break
+  
+  curses.curs_set(1)
 
 windows_binaries = [
   ("vmaf_v0.6.1.pkl", "https://raw.githubusercontent.com/Netflix/vmaf/master/model/vmaf_v0.6.1.pkl", "binary"),
@@ -336,5 +389,5 @@ if __name__ == "__main__":
     for worker in client.workers:
       worker.thread.join()
   else:
-    from curses import wrapper
-    wrapper(window)
+    import curses, textwrap
+    curses.wrapper(window)

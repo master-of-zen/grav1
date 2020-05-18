@@ -35,7 +35,11 @@ def tmp_file(mode, stream, suffix, cb):
     file.close()
     yield tmp_name
   finally:
-    os.unlink(tmp_name)
+    while os.path.exists(tmp_name):
+      try:
+        os.unlink(tmp_name)
+      except:
+        pass
 
 def vp9_encode(worker, input, encoder_params, args, status_cb):
   output_filename = f"{input}.webm"
@@ -58,6 +62,7 @@ def vp9_encode(worker, input, encoder_params, args, status_cb):
       stderr=subprocess.STDOUT,
       universal_newlines=True)
 
+    worker.progress = (pass_n, 0)
     status_cb(f"vp9 pass: {pass_n} {print_progress(0, total_frames)}")
 
     while True:
@@ -68,10 +73,10 @@ def vp9_encode(worker, input, encoder_params, args, status_cb):
 
       matches = re.findall(r"frame= *([^ ]+?) ", line)
       if matches:
+        worker.progress = (pass_n, int(matches[-1]))
         status_cb(f"vp9 pass: {pass_n} {print_progress(int(matches[-1]), total_frames)}")
     
     if worker.pipe.returncode != 0:
-      status_cb("error")
       success = False
 
   if os.path.isfile(f"{input}.log-0.log"):
@@ -115,6 +120,7 @@ def aom_encode(worker, input, encoder_params, status_cb):
       stderr=subprocess.STDOUT,
       universal_newlines=True)
 
+    worker.progress = (pass_n, 0)
     status_cb(f"aom pass: {pass_n} {print_progress(0, total_frames)}")
 
     while True:
@@ -125,10 +131,10 @@ def aom_encode(worker, input, encoder_params, status_cb):
 
       match = re.search(r"frame.*?\/([^ ]+?) ", line)
       if match:
+        worker.progress = (pass_n, int(match.group(1)))
         status_cb(f"aom pass: {pass_n} {print_progress(int(match.group(1)), total_frames)}")
     
     if worker.pipe.returncode != 0:
-      status_cb("error")
       success = False
 
   if os.path.isfile(f"{input}.log"):
@@ -197,6 +203,7 @@ class Worker:
     self.job = None
     self.pipe = None
     self.stopped = False
+    self.progress = (0, 0)
 
   def kill(self):
     self.stopped = True
@@ -208,6 +215,7 @@ class Worker:
     self.thread.start()
 
   def update_status(self, status):
+    if self.stopped: return
     if self.client.args.noui:
       print(status)
     self.status = status
@@ -223,13 +231,20 @@ class Worker:
         self.client.lock.acquire()
         self.lock_aquired = True
 
+      if len(self.client.workers) > self.client.numworkers or self.stopped:
+        self.client.lock.release()
+        self.client.workers.remove(self)
+        return
+
       self.update_status("downloading")
 
       while True:
         self.job = fetch_new_job(self.client)
         if self.job: break
         for i in range(0, 15):
-          if self.stopped: return
+          if self.stopped:
+            self.client.lock.release()
+            return
           self.update_status(f"waiting...{15-i:2d}")
           time.sleep(1)
 
@@ -237,11 +252,13 @@ class Worker:
       self.lock_aquired = False
 
       with tmp_file("wb", self.job.request, self.job.filename, self.update_status) as file:
+        if self.stopped: continue
+
         if self.job.encoder == "vp9":
           output = vp9_encode(self, file, self.job.encoder_params, self.update_status)
         elif self.job.encoder == "aom":
           output = aom_encode(self, file, self.job.encoder_params, self.update_status)
-        else: return
+        else: continue
 
         if output:
           self.update_status(f"uploading {self.job.projectid} {self.job.scene}")
@@ -292,7 +309,7 @@ def window(scr):
 
     scr.erase()
 
-    for line in textwrap.wrap(f"target: {args.target} workers: {args.workers} hit: {client.completed} miss: {client.failed}", width=mcols):
+    for line in textwrap.wrap(f"target: {args.target} workers: {client.numworkers} hit: {client.completed} miss: {client.failed}", width=mcols):
       scr.insstr(y, 0, line.ljust(mcols), curses.color_pair(1))
       y += 1
 
@@ -320,11 +337,23 @@ def window(scr):
       menu.selected_item = min(menu.selected_item + 1, len(menu.items) - 1)
     elif c == KEY_RETURN:
       if menu.selected_item == 0:
-        pass
+        client.numworkers += 1
+        while len(client.workers) < client.numworkers:
+          new_worker = Worker(client)
+          client.workers.append(new_worker)
+          new_worker.start()
       elif menu.selected_item == 1:
-        pass
+        client.numworkers = max(client.numworkers - 1, 0)
       elif menu.selected_item == 2:
-        pass
+        if len(client.workers) == client.numworkers or any(worker for worker in client.workers if worker.job is None):
+          client.numworkers = max(client.numworkers - 1, 0)
+
+        if not any(worker for worker in client.workers if worker.pipe is None):
+          sorted_workers = sorted([worker for worker in client.workers if not worker.stopped], key= lambda x: x.progress)
+          if len(sorted_workers) > 0:
+            sorted_workers[0].status = "killing"
+            sorted_workers[0].kill()
+        
       elif menu.selected_item == 3:
         for worker in client.workers:
           worker.kill()

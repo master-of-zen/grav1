@@ -1,9 +1,13 @@
 # grav1
 ## distributed network av1 / vp9 encoder
 
-[eight megabyte encodes](https://grass.moe/8mb.html)
-
 [web client](https://encode.grass.moe)
+
+### preview
+
+![client](https://github.com/wwww-wwww/grav1/raw/master/images/client.gif)
+
+<img src="https://github.com/wwww-wwww/grav1/raw/master/images/website.png" width="600">
 
 ### requirements
 server:
@@ -22,12 +26,6 @@ curses
 ffmpeg
 aomenc (vmaf optional)
 ```
-
-### preview
-
-![client](https://github.com/wwww-wwww/grav1/raw/master/images/client.png)
-
-<img src="https://github.com/wwww-wwww/grav1/raw/master/images/website.png" width="600">
 
 ### usage
 

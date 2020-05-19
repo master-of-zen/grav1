@@ -296,41 +296,24 @@ def window(scr):
   curses.curs_set(0)
   scr.nodelay(1)
 
+  curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
+
   menu = type("", (), {})
   menu.selected_item = 0
   menu.items = ["add", "remove", "remove (f)", "quit"]
   menu.scroll = 0
   
-  curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
-
   while True:
-    (mlines, mcols) = scr.getmaxyx()
-    y = 0
-
-    scr.erase()
-
-    for line in textwrap.wrap(f"target: {args.target} workers: {client.numworkers} hit: {client.completed} miss: {client.failed}", width=mcols):
-      scr.insstr(y, 0, line.ljust(mcols), curses.color_pair(1))
-      y += 1
+    c = scr.getch()
 
     msg = []
     for i, worker in enumerate(client.workers, start=1):
       msg.append(f"{i:2} {worker.status}")
 
-    for i, line in enumerate(msg[menu.scroll:mlines - y - 1 + menu.scroll]):
-      scr.insstr(y + i, 0, line)
-
-    line = " ".join([f"[{item}]" if i == menu.selected_item else f" {item} " for i, item in enumerate(menu.items)])
-    scr.insstr(mlines - 1, 0, line.ljust(mcols), curses.color_pair(1))
-    
-    scr.refresh()
-
-    c = scr.getch()
-
     if c == KEY_UP:
-      menu.scroll = max(menu.scroll - 1, 0)
+      menu.scroll -= 1
     elif c == KEY_DOWN:
-      menu.scroll = min(menu.scroll + 1, len(client.workers) - (mlines - y - 1))
+      menu.scroll += 1
     elif c == KEY_LEFT:
       menu.selected_item = max(menu.selected_item - 1, 0)
     elif c == KEY_RIGHT:
@@ -358,13 +341,36 @@ def window(scr):
         for worker in client.workers:
           worker.kill()
         break
+    
+    scr.erase()
+
+    (mlines, mcols) = scr.getmaxyx()
+
+    header = []
+    for line in textwrap.wrap(f"target: {args.target} workers: {client.numworkers} hit: {client.completed} miss: {client.failed}", width=mcols):
+      header.append(line)
+
+    body_y = len(header)
+    window_size = mlines - body_y - 1
+    menu.scroll = max(min(menu.scroll, len(client.workers) - window_size), 0)
+
+    for i, line in enumerate(header):
+      scr.insstr(i, 0, line.ljust(mcols), curses.color_pair(1))
+
+    for i, line in enumerate(msg[menu.scroll:window_size + menu.scroll], start=body_y):
+      scr.insstr(i, 0, line)
+
+    footer = " ".join([f"[{item}]" if i == menu.selected_item else f" {item} " for i, item in enumerate(menu.items)])
+    scr.insstr(mlines - 1, 0, footer.ljust(mcols), curses.color_pair(1))
+    
+    scr.refresh()
   
   curses.curs_set(1)
 
 windows_binaries = [
   ("vmaf_v0.6.1.pkl", "https://raw.githubusercontent.com/Netflix/vmaf/master/model/vmaf_v0.6.1.pkl", "binary"),
   ("vmaf_v0.6.1.pkl.model", "https://raw.githubusercontent.com/Netflix/vmaf/master/model/vmaf_v0.6.1.pkl.model", "binary"),
-  ("ffmpeg.exe", "https://f.grass.moe/f/Sy/ffmpeg.zip", "zip")
+  ("ffmpeg.exe", "https://www.sfu.ca/~ssleong/ffmpeg.zip", "zip")
 ]
 
 if __name__ == "__main__":

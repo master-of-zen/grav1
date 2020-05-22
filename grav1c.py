@@ -4,10 +4,24 @@ import os, subprocess, re, contextlib, requests, time, json
 from tempfile import NamedTemporaryFile
 from threading import Lock, Thread
 
+bytes_map = ["B", "K", "M", "G"]
+
+def n_bytes(num_bytes):
+  if num_bytes / 1024 < 1: return (num_bytes, 0)
+  r = n_bytes(num_bytes / 1024)
+  return (r[0], r[1] + 1)
+
+def bytes_str(num_bytes):
+  r = n_bytes(num_bytes)
+  return f"{r[0]:.1f}{bytes_map[r[1]]}"
+
+def print_progress_bytes(n, total, size=10, suffix=""):
+  fill = "█" * int((n / total) * size)
+  return "{:3.0f}%|{:{}s}| {}/{}".format(100 * n / total, fill, size, bytes_str(n), bytes_str(total))
+
 def print_progress(n, total, size=10, suffix=""):
   fill = "█" * int((n / total) * size)
-  remaining = " " * (size - len(fill))
-  return f"{int(100 * n / total):3d}%|{fill}{remaining}| {n}/{total}"
+  return "{:3.0f}%|{:{}s}| {}/{}".format(100 * n / total, fill, size, n, total)
 
 def get_frames(input):
   cmd = f"ffmpeg -hide_banner -map 0:v:0 -c copy -f null {os.devnull} -i".split(" ")
@@ -29,7 +43,7 @@ def tmp_file(mode, stream, suffix, cb):
     for chunk in stream.iter_content(chunk_size=8192):
       if chunk:
         downloaded = downloaded + len(chunk)
-        cb(f"downloading {print_progress(downloaded, total_size)}")
+        cb(f"downloading {print_progress_bytes(downloaded, total_size)}")
         file.write(chunk)
     file.flush()
     file.close()

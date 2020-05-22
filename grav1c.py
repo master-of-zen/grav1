@@ -387,9 +387,9 @@ if __name__ == "__main__":
   
   if os.name == "nt":
     if not os.path.isfile("aomenc.exe"):
-      with requests.get("https://ci.appveyor.com/api/projects/Randomderp/aom") as r:
+      with requests.get("https://ci.appveyor.com/api/projects/marcomsousa/build-aom") as r:
         latest_job = r.json()["build"]["jobs"][0]["jobId"]
-        windows_binaries.append(("aomenc.exe", f"https://ci.appveyor.com/api/buildjobs/{latest_job}/artifacts/aom.zip", "zip"))
+        windows_binaries.append(("aomenc.exe", f"https://ci.appveyor.com/api/buildjobs/{latest_job}/artifacts/aomenc.exe", "binary"))
     
     for file in windows_binaries:
       if not os.path.isfile(file[0]):

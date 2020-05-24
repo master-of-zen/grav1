@@ -55,63 +55,18 @@ def tmp_file(mode, stream, suffix, cb):
       except:
         pass
 
-def vp9_encode(worker, input, encoder_params, args, status_cb):
-  output_filename = f"{input}.webm"
+def aom_vpx_encode(worker, encoder, input, output_ext, encoder_params, status_cb):
+  if encoder == "aomenc":
+    if "vmaf" in encoder_params and len(worker.client.args.vmaf_path) > 0:
+      encoder_params = f"{encoder_params} --vmaf-model-path={worker.client.args.vmaf_path}"
 
-  vp9 = f"ffmpeg -y -hide_banner".split(" ")
-  vp9.extend(["-i",  input, "-c:v", "libvpx-vp9", "-an", "-passlogfile", f"{input}.log"])
-  vp9.extend(encoder_params.split(" "))
-  passes = [vp9 + cmd for cmd in [
-    ["-pass", "1", "-f", "webm", os.devnull],
-    ["-pass", "2", output_filename]
-  ]]
-
-  total_frames = get_frames(input)
-  if total_frames is None: return False
-
-  success = True
-  for pass_n, cmd in enumerate(passes, start=1):
-    worker.pipe = subprocess.Popen(cmd,
-      stdout=subprocess.PIPE,
-      stderr=subprocess.STDOUT,
-      universal_newlines=True)
-
-    worker.progress = (pass_n, 0)
-    status_cb(f"vp9 pass: {pass_n} {print_progress(0, total_frames)}")
-
-    while True:
-      line = worker.pipe.stdout.readline().strip()
-
-      if len(line) == 0 and worker.pipe.poll() is not None:
-        break
-
-      matches = re.findall(r"frame= *([^ ]+?) ", line)
-      if matches:
-        worker.progress = (pass_n, int(matches[-1]))
-        status_cb(f"vp9 pass: {pass_n} {print_progress(int(matches[-1]), total_frames)}")
-    
-    if worker.pipe.returncode != 0:
-      success = False
-
-  if os.path.isfile(f"{input}.log-0.log"):
-    os.remove(f"{input}.log-0.log")
-
-  if success:
-    return output_filename
-  else:
-    return False
-
-def aom_encode(worker, input, encoder_params, status_cb):
-  if "vmaf" in encoder_params and len(worker.client.args.vmaf_path) > 0:
-    encoder_params = f"{encoder_params} --vmaf-model-path={worker.client.args.vmaf_path}"
-
-  output_filename = f"{input}.ivf"
+  output_filename = f"{input}.{output_ext}"
 
   ffmpeg = f"ffmpeg -y -hide_banner -loglevel error".split(" ")
   ffmpeg.extend(["-i",  input])
   ffmpeg.extend("-strict -1 -pix_fmt yuv420p -f yuv4mpegpipe -".split(" "))
 
-  aom = f"aomenc - --fpf={input}.log --threads={args.threads} {encoder_params}".split(" ")
+  aom = f"{encoder} - --fpf={input}.log --threads={args.threads} {encoder_params}".split(" ")
 
   aom.append("--passes=2")
   passes = [aom + cmd for cmd in [
@@ -135,7 +90,7 @@ def aom_encode(worker, input, encoder_params, status_cb):
       universal_newlines=True)
 
     worker.progress = (pass_n, 0)
-    status_cb(f"aom pass: {pass_n} {print_progress(0, total_frames)}")
+    status_cb(f"{encoder:.3s} pass: {pass_n} {print_progress(0, total_frames)}")
 
     while True:
       line = worker.pipe.stdout.readline().strip()
@@ -146,7 +101,7 @@ def aom_encode(worker, input, encoder_params, status_cb):
       match = re.search(r"frame.*?\/([^ ]+?) ", line)
       if match:
         worker.progress = (pass_n, int(match.group(1)))
-        status_cb(f"aom pass: {pass_n} {print_progress(int(match.group(1)), total_frames)}")
+        status_cb(f"{encoder:.3s} pass: {pass_n} {print_progress(int(match.group(1)), total_frames)}")
     
     if worker.pipe.returncode != 0:
       success = False
@@ -268,10 +223,10 @@ class Worker:
       with tmp_file("wb", self.job.request, self.job.filename, self.update_status) as file:
         if self.stopped: continue
 
-        if self.job.encoder == "vp9":
-          output = vp9_encode(self, file, self.job.encoder_params, self.update_status)
+        if self.job.encoder == "vpx":
+          output = aom_vpx_encode(self, "vpxenc", file, "webm", self.job.encoder_params, self.update_status)
         elif self.job.encoder == "aom":
-          output = aom_encode(self, file, self.job.encoder_params, self.update_status)
+          output = aom_vpx_encode(self, "aomenc", file, "ivf", self.job.encoder_params, self.update_status)
         else: continue
 
         if output:
@@ -333,15 +288,19 @@ def window(scr):
     elif c == KEY_RIGHT:
       menu.selected_item = min(menu.selected_item + 1, len(menu.items) - 1)
     elif c == KEY_RETURN:
-      if menu.selected_item == 0:
+      menu_action = menu.items[menu.selected_item]
+
+      if menu_action == "add":
         client.numworkers += 1
         while len(client.workers) < client.numworkers:
           new_worker = Worker(client)
           client.workers.append(new_worker)
           new_worker.start()
-      elif menu.selected_item == 1:
+
+      elif menu_action == "remove":
         client.numworkers = max(client.numworkers - 1, 0)
-      elif menu.selected_item == 2:
+
+      elif menu_action == "remove (f)":
         if len(client.workers) == client.numworkers or any(worker for worker in client.workers if worker.job is None):
           client.numworkers = max(client.numworkers - 1, 0)
 
@@ -351,7 +310,7 @@ def window(scr):
             sorted_workers[0].status = "killing"
             sorted_workers[0].kill()
         
-      elif menu.selected_item == 3:
+      elif menu_action == "quit":
         for worker in client.workers:
           worker.kill()
         break
@@ -384,7 +343,8 @@ def window(scr):
 windows_binaries = [
   ("vmaf_v0.6.1.pkl", "https://raw.githubusercontent.com/Netflix/vmaf/master/model/vmaf_v0.6.1.pkl", "binary"),
   ("vmaf_v0.6.1.pkl.model", "https://raw.githubusercontent.com/Netflix/vmaf/master/model/vmaf_v0.6.1.pkl.model", "binary"),
-  ("ffmpeg.exe", "https://www.sfu.ca/~ssleong/ffmpeg.zip", "zip")
+  ("ffmpeg.exe", "https://www.sfu.ca/~ssleong/ffmpeg.zip", "zip"),
+  ("vpxenc.exe", "https://www.sfu.ca/~ssleong/vpxenc.exe", "binary")
 ]
 
 if __name__ == "__main__":

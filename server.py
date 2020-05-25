@@ -19,9 +19,9 @@ re_duration = re.compile(r"Duration: (\d{2}):(\d{2}):(\d{2}).(\d{2})", re.U)
 re_position = re.compile(r".*time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})", re.U)
 
 class Project:
-  def __init__(self, filename, encoder, encoder_params, threshold, min_frames, max_frames, scene_settings, priority=0, id=0):
+  def __init__(self, filename, encoder, encoder_params, threshold, min_frames, max_frames, scenes, total_frames=0, priority=0, id=0):
     self.projectid = id or int(time())
-    self.path_in = os.path.join(path_in, filename)
+    self.path_in = filename
     self.path_out = path_out.format(self.projectid)
     self.path_split = path_split.format(self.projectid)
     self.path_encode = path_encode.format(self.projectid)
@@ -33,12 +33,11 @@ class Project:
     self.max_frames = max_frames
     self.encoder = encoder
     self.encoder_params = encoder_params
-    self.scene_settings = scene_settings
-    self.scenes = {}
+    self.scenes = scenes
     self.total_jobs = 0
     self.priority = priority
     self.stopped = False
-    self.input_total_frames = 0
+    self.input_total_frames = total_frames
     
     self.total_frames = 0
 
@@ -68,7 +67,6 @@ class Project:
     ffmpeg_pool -= 1
 
   def verify_split(self):
-    total_frames = 0
     scene_filenames = os.listdir(self.path_split)
 
     for i, scene in enumerate(scene_filenames, start=1):
@@ -100,7 +98,8 @@ class Project:
   def start(self):
     global ffmpeg_pool
     
-    self.input_total_frames = get_frames(self.path_in)
+    if not self.input_total_frames:
+      self.input_total_frames = get_frames(self.path_in)
 
     if not os.path.isdir(self.path_split) or len(os.listdir(self.path_split)) == 0:
       self.set_status("splitting", True)
@@ -122,7 +121,6 @@ class Project:
       while ffmpeg_pool >= 4:
         pass
       if self.stopped: return
-      ffmpeg_pool += 1
       
       if scene_n not in self.scenes:
         self.scenes[scene_n] = {
@@ -131,12 +129,23 @@ class Project:
           "encoder_params": ""
         }
 
-      t = Thread(target=self.count_frames, args=(scene,), daemon=True)
-      t.start()
-      ffmpeg_threads.append(t)
+      if self.scenes[scene_n]["filesize"]:
+        self.frames += self.scenes[scene_n]["frames"]
+
+      if self.scenes[scene_n]["frames"]:
+        self.total_frames += self.scenes[scene_n]["frames"]
+
+      if self.scenes[scene_n]["frames"] == 0 or self.scenes[scene_n]["filesize"] == 0:
+        ffmpeg_pool += 1
+        t = Thread(target=self.count_frames, args=(scene,), daemon=True)
+        t.start()
+        ffmpeg_threads.append(t)
 
     for t in ffmpeg_threads:
       t.join()
+    
+    save_projects()
+    print("done loading", self.projectid)
 
     if self.stopped: return
     
@@ -148,11 +157,7 @@ class Project:
 
         encoded_filename = self.get_encoded_filename(scene_n)
 
-        if scene_n in self.scene_settings:
-          self.scenes[scene_n]["encoder_params"] = self.scene_settings[scene_n]
-          scene_setting = self.scene_settings[scene_n]
-        else:
-          scene_setting = f"{self.encoder_params}"
+        scene_setting = self.scenes[scene_n]["encoder_params"] if self.scenes[scene_n]["encoder_params"] else self.encoder_params
 
         self.jobs[scene_n] = Job(
           self.encoder,
@@ -220,16 +225,18 @@ def save_projects():
   for pid in projects:
     project = projects[pid]
     p = {}
+    p["priority"] = project.priority
     p["path_in"] = project.path_in
     p["encoder_params"] = project.encoder_params
     p["threshold"] = project.threshold
     p["min_frames"] = project.min_frames
     p["max_frames"] = project.max_frames
-    p["scene_settings"] = project.scene_settings
+    p["scenes"] = project.scenes
     p["encoder"] = project.encoder
+    p["input_frames"] = project.input_total_frames
     rtn[pid] = p
 
-  json.dump(rtn, open("projects.json", "w+"))
+  json.dump(rtn, open("projects.json", "w+"), indent=2)
 
 def load_projects():
   if not os.path.isfile("projects.json"): return
@@ -243,7 +250,8 @@ def load_projects():
       p["threshold"],
       p["min_frames"],
       p["max_frames"],
-      p["scene_settings"],
+      p["scenes"],
+      p["input_frames"],
       p["priority"],
       pid)
     projects[pid] = project

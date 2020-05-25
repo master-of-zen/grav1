@@ -3,11 +3,18 @@
 
 [web client](https://encode.grass.moe)
 
+message me on the av1 discord if you're actually going to use this
+
 ### preview
 
 ![client](https://github.com/wwww-wwww/grav1/raw/master/images/client.gif)
 
 <img src="https://github.com/wwww-wwww/grav1/raw/master/images/website.png" width="600">
+
+### latest significant changes:
+- vpx encodes to use ivf
+- web client preview analyzer can now also do vpx segments
+  ![](https://cdn.discordapp.com/attachments/662576870642024459/714416252361244702/Screenshot_2020-05-25_Analyzer1.png)
 
 ### requirements
 server:
@@ -15,6 +22,10 @@ server:
 flask
 flask-cors
 wsgiserver
+```
+server (system):
+```
+ffmpeg
 ```
 client:  
 ```
@@ -25,6 +36,7 @@ client (system):
 curses
 ffmpeg
 aomenc (vmaf optional)
+vpxenc
 ```
 
 ### usage

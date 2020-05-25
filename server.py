@@ -39,7 +39,6 @@ class Project:
     self.priority = priority
     self.stopped = False
     self.input_total_frames = 0
-    self.framerate = 24000 / 1001
     
     self.total_frames = 0
 
@@ -79,7 +78,7 @@ class Project:
       
       if num_frames_slow != num_frames:
         print("bad framecount", self.projectid, scene, "supposed to be:", num_frames, "got:", num_frames_slow)
-        cmd = ["ffmpeg", "-i", self.path_in, "-ss", str((self.total_frames) / (self.framerate)), "-frames:v", str(num_frames)]
+        cmd = ["ffmpeg", "-i", self.path_in, "-vf", f"select=gte(n\\,{self.total_frames})", "-frames:v", str(num_frames)]
         cmd.extend(f"-crf 1 -qmin 0 -qmax 1 -an -y".split(" "))
         cmd.append(os.path.join(self.path_split, scene))
         ffmpeg(cmd, None)

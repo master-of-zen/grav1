@@ -55,12 +55,12 @@ def tmp_file(mode, stream, suffix, cb):
       except:
         pass
 
-def aom_vpx_encode(worker, encoder, input, output_ext, encoder_params, status_cb):
+def aom_vpx_encode(worker, encoder, input, encoder_params, status_cb):
   if encoder == "aomenc":
     if "vmaf" in encoder_params and len(worker.client.args.vmaf_path) > 0:
       encoder_params = f"{encoder_params} --vmaf-model-path={worker.client.args.vmaf_path}"
 
-  output_filename = f"{input}.{output_ext}"
+  output_filename = f"{input}.ivf"
 
   ffmpeg = f"ffmpeg -y -hide_banner -loglevel error".split(" ")
   ffmpeg.extend(["-i",  input])
@@ -224,9 +224,9 @@ class Worker:
         if self.stopped: continue
 
         if self.job.encoder == "vpx":
-          output = aom_vpx_encode(self, "vpxenc", file, "webm", self.job.encoder_params, self.update_status)
+          output = aom_vpx_encode(self, "vpxenc", file, self.job.encoder_params, self.update_status)
         elif self.job.encoder == "aom":
-          output = aom_vpx_encode(self, "aomenc", file, "ivf", self.job.encoder_params, self.update_status)
+          output = aom_vpx_encode(self, "aomenc", file, self.job.encoder_params, self.update_status)
         else: continue
 
         if output:
@@ -269,6 +269,7 @@ def window(scr):
 
   menu = type("", (), {})
   menu.selected_item = 0
+  #menu.items = ["pause", "add", "remove", "remove (f)", "quit"]
   menu.items = ["add", "remove", "remove (f)", "quit"]
   menu.scroll = 0
   
@@ -314,6 +315,10 @@ def window(scr):
         for worker in client.workers:
           worker.kill()
         break
+      #elif menu_action == "pause":
+      #  menu.items[0] = "resume"
+      #elif menu_action == "resume":
+      #  menu.items[0] = "pause"
     
     scr.erase()
 

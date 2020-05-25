@@ -191,10 +191,7 @@ class Project:
     self.status = msg
 
   def get_encoded_filename(self, scene_n):
-    if self.encoder == "aom":
-      return scene_n + ".ivf"
-    else:
-      return scene_n + ".webm"
+    return scene_n + ".ivf"
 
   def concat(self):
     keys = list(self.scenes.keys())

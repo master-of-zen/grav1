@@ -41,11 +41,13 @@ class Project:
     
     self.total_frames = 0
 
-    self.frames = 0
     self.encoded_frames = 0
     self.encode_start = None
     self.fps = 0
   
+  def get_frames(self):
+    return sum([self.scenes[scene]["frames"] for scene in self.scenes if self.scenes[scene]["filesize"] != 0])
+
   def count_frames(self, scene):
     global ffmpeg_pool
     scene_n = str(os.path.splitext(scene)[0])
@@ -62,7 +64,6 @@ class Project:
 
     if os.path.isfile(file_ivf):
       self.scenes[scene_n]["filesize"] = os.stat(file_ivf).st_size
-      self.frames += num_frames
 
     ffmpeg_pool -= 1
 
@@ -94,6 +95,8 @@ class Project:
         "encoder_params": ""
       }
       self.set_status(f"verifying split {i}/{len(scene_filenames)}")
+      
+    self.total_frames = 0
 
   def start(self):
     global ffmpeg_pool
@@ -128,9 +131,6 @@ class Project:
           "frames": 0,
           "encoder_params": ""
         }
-
-      if self.scenes[scene_n]["filesize"]:
-        self.frames += self.scenes[scene_n]["frames"]
 
       if self.scenes[scene_n]["frames"]:
         self.total_frames += self.scenes[scene_n]["frames"]
@@ -171,7 +171,7 @@ class Project:
 
       self.set_status("ready", True)
     else:
-      print("total frame mismatch")
+      print("total frame mismatch", self.total_frames, self.input_total_frames)
       self.set_status("total frame mismatch")
 
     if os.path.isfile(self.path_out):
@@ -180,7 +180,7 @@ class Project:
       self.complete()
 
   def complete(self):
-    if len(self.jobs) == 0 and self.frames == self.total_frames:
+    if len(self.jobs) == 0 and self.get_frames() == self.total_frames:
       self.set_status("done! joining files", True)
       self.concat()
       self.set_status("complete")
@@ -284,7 +284,7 @@ def get_projects():
     p = {}
     p["projectid"] = pid
     p["input"] = project.path_in
-    p["frames"] = project.frames
+    p["frames"] = project.get_frames()
     p["total_frames"] = project.input_total_frames
     p["fps"] = project.fps
     p["jobs"] = len(project.jobs)
@@ -364,7 +364,7 @@ def receive():
 
   encoded = os.path.join(project.path_encode, job.encoded_filename)
   
-  if os.path.isfile(encoded):
+  if scene["filesize"] > 0:
     print("discard", projectid, scene_number, "already done")
     return "already done", 200
 
@@ -381,7 +381,6 @@ def receive():
 
   scene["filesize"] = os.stat(encoded).st_size
 
-  project.frames += scene["frames"]
   if sender in job.workers:
     project.encoded_frames += scene["frames"]
     
@@ -390,8 +389,9 @@ def receive():
   print("recv", projectid, scene_number, "from", sender)
 
   project.update_progress()
+  save_projects()
 
-  if len(project.jobs) == 0 and project.frames == project.total_frames:
+  if len(project.jobs) == 0 and project.get_frames() == project.total_frames:
     print("done", projectid)
     Thread(target=lambda: project.complete(), daemon=True).start()
     

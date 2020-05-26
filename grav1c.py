@@ -66,7 +66,7 @@ def aom_vpx_encode(worker, encoder, input, encoder_params, status_cb):
   ffmpeg.extend(["-i",  input])
   ffmpeg.extend("-strict -1 -pix_fmt yuv420p -f yuv4mpegpipe -".split(" "))
 
-  aom = f"{encoder} - --fpf={input}.log --threads={args.threads} {encoder_params}".split(" ")
+  aom = f"{encoder} - --ivf --fpf={input}.log --threads={args.threads} {encoder_params}".split(" ")
 
   aom.append("--passes=2")
   passes = [aom + cmd for cmd in [
@@ -269,7 +269,6 @@ def window(scr):
 
   menu = type("", (), {})
   menu.selected_item = 0
-  #menu.items = ["pause", "add", "remove", "remove (f)", "quit"]
   menu.items = ["add", "remove", "remove (f)", "quit"]
   menu.scroll = 0
   
@@ -315,10 +314,6 @@ def window(scr):
         for worker in client.workers:
           worker.kill()
         break
-      #elif menu_action == "pause":
-      #  menu.items[0] = "resume"
-      #elif menu_action == "resume":
-      #  menu.items[0] = "pause"
     
     scr.erase()
 

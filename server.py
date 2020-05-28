@@ -57,13 +57,6 @@ class Project:
 
       self.total_frames += num_frames
       self.scenes[scene_n]["frames"] = num_frames
-      
-    encoded_filename = self.get_encoded_filename(scene_n)
-
-    file_ivf = os.path.join(self.path_encode, encoded_filename)
-
-    if os.path.isfile(file_ivf):
-      self.scenes[scene_n]["filesize"] = os.stat(file_ivf).st_size
 
     ffmpeg_pool -= 1
 
@@ -77,9 +70,18 @@ class Project:
       
       if num_frames_slow != num_frames:
         print("bad framecount", self.projectid, scene, "supposed to be:", num_frames, "got:", num_frames_slow)
-        cmd = ["ffmpeg", "-i", self.path_in, "-vf", f"select=gte(n\\,{self.total_frames})", "-frames:v", str(num_frames)]
-        cmd.extend(f"-crf 1 -qmin 0 -qmax 1 -an -y".split(" "))
-        cmd.append(os.path.join(self.path_split, scene))
+          
+        cmd = [
+          "ffmpeg", "-hide_banner",
+          "-i", self.path_in,
+          "-map", "0:v:0",
+          "-vf", f"select=gte(n\\,{self.total_frames})",
+          "-frames:v", str(num_frames),
+          "-crf", "1", # lossless is broken
+          "-qmin", "0",
+          "-qmax", "1",
+          "-y", os.path.join(self.path_split, scene)
+        ]
         ffmpeg(cmd, None)
 
         if get_frames(os.path.join(self.path_split, scene), False) == num_frames:
@@ -132,14 +134,16 @@ class Project:
           "encoder_params": ""
         }
 
-      if self.scenes[scene_n]["frames"]:
-        self.total_frames += self.scenes[scene_n]["frames"]
-
-      if self.scenes[scene_n]["frames"] == 0 or self.scenes[scene_n]["filesize"] == 0:
+      if self.scenes[scene_n]["frames"] == 0:
         ffmpeg_pool += 1
         t = Thread(target=self.count_frames, args=(scene,), daemon=True)
         t.start()
         ffmpeg_threads.append(t)
+      else:
+        self.total_frames += self.scenes[scene_n]["frames"]
+        
+      file_ivf = os.path.join(self.path_encode, self.get_encoded_filename(scene_n))
+      self.scenes[scene_n]["filesize"] = os.stat(file_ivf).st_size if os.path.isfile(file_ivf) else 0
 
     for t in ffmpeg_threads:
       t.join()

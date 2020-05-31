@@ -15,21 +15,20 @@ def bytes_str(num_bytes):
   r = n_bytes(num_bytes)
   return f"{r[0]:.1f}{bytes_map[r[1]]}"
 
-def print_progress_bytes(n, total, size=10, suffix=""):
-  fill = "█" * int((n / total) * size)
-  return "{:3.0f}%|{:{}s}| {}/{}".format(100 * n / total, fill, size, bytes_str(n), bytes_str(total))
+def print_progress_bytes(n, total):
+  fill = "█" * int((n / total) * 10)
+  return "{:3.0f}%|{:{}s}| {}/{}".format(100 * n / total, fill, 10, bytes_str(n), bytes_str(total))
 
-def print_progress(n, total, size=10, suffix=""):
-  fill = "█" * int((n / total) * size)
-  return "{:3.0f}%|{:{}s}| {}/{}".format(100 * n / total, fill, size, n, total)
+def print_progress(n, total):
+  fill = "█" * int((n / total) * 10)
+  return "{:3.0f}%|{:{}s}| {}/{}".format(100 * n / total, fill, 10, n, total)
 
 def get_frames(input):
-  cmd = f"ffmpeg -hide_banner -map 0:v:0 -c copy -f null {os.devnull} -i".split(" ")
-  cmd.append(input)
+  cmd = ["ffmpeg", "-hide_banner", "-i", input, "-map", "0:v:0", "-c", "copy", "-f", "null", "-"]
   r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-  match = re.search(r"frame= *([^ ]+?) ", r.stderr.decode("utf-8") + r.stdout.decode("utf-8"))
-  if match:
-    return int(match.group(1))
+  matches = re.findall(r"frame= *([^ ]+?) ", r.stderr.decode("utf-8") + r.stdout.decode("utf-8"))
+  if matches:
+    return int(matches[-1])
   else:
     return None
 
@@ -66,12 +65,11 @@ def aom_vpx_encode(worker, encoder, input, encoder_params, status_cb):
   ffmpeg.extend(["-i",  input])
   ffmpeg.extend("-strict -1 -pix_fmt yuv420p -f yuv4mpegpipe -".split(" "))
 
-  aom = f"{encoder} - --ivf --fpf={input}.log --threads={args.threads} {encoder_params}".split(" ")
+  aom = [encoder, "-", "--ivf", f"--fpf={input}.log", f"--threads={args.threads}", "--passes=2"]
 
-  aom.append("--passes=2")
   passes = [aom + cmd for cmd in [
-    ["--pass=1", "-o", os.devnull],
-    ["--pass=2", "-o", output_filename]
+    re.sub(r"--denoise-noise-level=[0-9]+", "", encoder_params).split(" ") + ["--pass=1", "-o", os.devnull],
+    encoder_params.split(" ") + ["--pass=2", "-o", output_filename]
   ]]
 
   total_frames = get_frames(input)

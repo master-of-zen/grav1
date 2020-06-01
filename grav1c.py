@@ -6,6 +6,12 @@ from threading import Lock, Thread
 
 bytes_map = ["B", "K", "M", "G"]
 
+KEY_UP = 259
+KEY_DOWN = 258
+KEY_LEFT = 260
+KEY_RIGHT = 261
+KEY_RETURN = 10
+
 def n_bytes(num_bytes):
   if num_bytes / 1024 < 1: return (num_bytes, 0)
   r = n_bytes(num_bytes / 1024)
@@ -160,6 +166,98 @@ class Client:
     self.jobs = []
     self.lock = Lock()
     self.session = requests.Session()
+    self.scr = None
+    
+    self.menu = type("", (), {})
+    self.menu.selected_item = 0
+    self.menu.items = ["add", "remove", "remove (f)", "quit"]
+    self.menu.scroll = 0
+    self.refreshing = False
+
+  def refresh_screen(self):
+    if not self.scr or self.refreshing: return
+    self.refreshing = True
+
+    msg = []
+    for i, worker in enumerate(self.workers, start=1):
+      msg.append(f"{i:2} {worker.status}")
+
+    self.scr.erase()
+
+    (mlines, mcols) = self.scr.getmaxyx()
+
+    header = []
+    for line in textwrap.wrap(f"target: {args.target} workers: {client.numworkers} hit: {client.completed} miss: {client.failed}", width=mcols):
+      header.append(line)
+
+    body_y = len(header)
+    window_size = mlines - body_y - 1
+    self.menu.scroll = max(min(self.menu.scroll, len(client.workers) - window_size), 0)
+
+    for i, line in enumerate(header):
+      self.scr.insstr(i, 0, line.ljust(mcols), curses.color_pair(1))
+
+    for i, line in enumerate(msg[self.menu.scroll:window_size + self.menu.scroll], start=body_y):
+      self.scr.insstr(i, 0, line)
+
+    footer = " ".join([f"[{item}]" if i == self.menu.selected_item else f" {item} " for i, item in enumerate(self.menu.items)])
+    self.scr.insstr(mlines - 1, 0, footer.ljust(mcols), curses.color_pair(1))
+    
+    self.scr.refresh()
+    self.refreshing = False
+  
+  def window(self, scr):
+    self.scr = scr
+
+    curses.curs_set(0)
+    scr.nodelay(0)
+
+    curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
+
+    self.refresh_screen()
+    
+    while True:
+      c = scr.getch()
+
+      if c == KEY_UP:
+        self.menu.scroll -= 1
+      elif c == KEY_DOWN:
+        self.menu.scroll += 1
+      elif c == KEY_LEFT:
+        self.menu.selected_item = max(self.menu.selected_item - 1, 0)
+      elif c == KEY_RIGHT:
+        self.menu.selected_item = min(self.menu.selected_item + 1, len(self.menu.items) - 1)
+      elif c == KEY_RETURN:
+        menu_action = self.menu.items[self.menu.selected_item]
+
+        if menu_action == "add":
+          self.numworkers += 1
+          while len(self.workers) < self.numworkers:
+            new_worker = Worker(self)
+            self.workers.append(new_worker)
+            new_worker.start()
+
+        elif menu_action == "remove":
+          self.numworkers = max(self.numworkers - 1, 0)
+
+        elif menu_action == "remove (f)":
+          if len(self.workers) == self.numworkers or any(worker for worker in self.workers if worker.job is None):
+            self.numworkers = max(self.numworkers - 1, 0)
+
+          if not any(worker for worker in self.workers if worker.pipe is None):
+            sorted_workers = sorted([worker for worker in self.workers if not worker.stopped], key= lambda x: x.progress)
+            if len(sorted_workers) > 0:
+              sorted_workers[0].status = "killing"
+              sorted_workers[0].kill()
+          
+        elif menu_action == "quit":
+          for worker in self.workers:
+            worker.kill()
+          break
+
+      self.refresh_screen()
+        
+    curses.curs_set(1)
 
 class Worker:
   def __init__(self, client):
@@ -185,7 +283,9 @@ class Worker:
     if self.stopped: return
     if self.client.args.noui:
       print(status)
-    self.status = status
+    else:
+      self.status = status
+      self.client.refresh_screen()
 
   def work(self):
     while True:
@@ -253,91 +353,6 @@ class Worker:
           self.client.jobs.remove(self.job)
           self.job = None
 
-KEY_UP = 259
-KEY_DOWN = 258
-KEY_LEFT = 260
-KEY_RIGHT = 261
-KEY_RETURN = 10
-
-def window(scr):
-  curses.curs_set(0)
-  scr.nodelay(1)
-
-  curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
-
-  menu = type("", (), {})
-  menu.selected_item = 0
-  menu.items = ["add", "remove", "remove (f)", "quit"]
-  menu.scroll = 0
-  
-  while True:
-    c = scr.getch()
-
-    msg = []
-    for i, worker in enumerate(client.workers, start=1):
-      msg.append(f"{i:2} {worker.status}")
-
-    if c == KEY_UP:
-      menu.scroll -= 1
-    elif c == KEY_DOWN:
-      menu.scroll += 1
-    elif c == KEY_LEFT:
-      menu.selected_item = max(menu.selected_item - 1, 0)
-    elif c == KEY_RIGHT:
-      menu.selected_item = min(menu.selected_item + 1, len(menu.items) - 1)
-    elif c == KEY_RETURN:
-      menu_action = menu.items[menu.selected_item]
-
-      if menu_action == "add":
-        client.numworkers += 1
-        while len(client.workers) < client.numworkers:
-          new_worker = Worker(client)
-          client.workers.append(new_worker)
-          new_worker.start()
-
-      elif menu_action == "remove":
-        client.numworkers = max(client.numworkers - 1, 0)
-
-      elif menu_action == "remove (f)":
-        if len(client.workers) == client.numworkers or any(worker for worker in client.workers if worker.job is None):
-          client.numworkers = max(client.numworkers - 1, 0)
-
-        if not any(worker for worker in client.workers if worker.pipe is None):
-          sorted_workers = sorted([worker for worker in client.workers if not worker.stopped], key= lambda x: x.progress)
-          if len(sorted_workers) > 0:
-            sorted_workers[0].status = "killing"
-            sorted_workers[0].kill()
-        
-      elif menu_action == "quit":
-        for worker in client.workers:
-          worker.kill()
-        break
-    
-    scr.erase()
-
-    (mlines, mcols) = scr.getmaxyx()
-
-    header = []
-    for line in textwrap.wrap(f"target: {args.target} workers: {client.numworkers} hit: {client.completed} miss: {client.failed}", width=mcols):
-      header.append(line)
-
-    body_y = len(header)
-    window_size = mlines - body_y - 1
-    menu.scroll = max(min(menu.scroll, len(client.workers) - window_size), 0)
-
-    for i, line in enumerate(header):
-      scr.insstr(i, 0, line.ljust(mcols), curses.color_pair(1))
-
-    for i, line in enumerate(msg[menu.scroll:window_size + menu.scroll], start=body_y):
-      scr.insstr(i, 0, line)
-
-    footer = " ".join([f"[{item}]" if i == menu.selected_item else f" {item} " for i, item in enumerate(menu.items)])
-    scr.insstr(mlines - 1, 0, footer.ljust(mcols), curses.color_pair(1))
-    
-    scr.refresh()
-  
-  curses.curs_set(1)
-
 windows_binaries = [
   ("vmaf_v0.6.1.pkl", "https://raw.githubusercontent.com/Netflix/vmaf/master/model/vmaf_v0.6.1.pkl", "binary"),
   ("vmaf_v0.6.1.pkl.model", "https://raw.githubusercontent.com/Netflix/vmaf/master/model/vmaf_v0.6.1.pkl.model", "binary"),
@@ -397,4 +412,4 @@ if __name__ == "__main__":
       worker.thread.join()
   else:
     import curses, textwrap
-    curses.wrapper(window)
+    curses.wrapper(lambda scr: client.window(scr))

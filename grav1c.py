@@ -2,7 +2,7 @@
 
 import os, subprocess, re, contextlib, requests, time, json
 from tempfile import NamedTemporaryFile
-from threading import Lock, Thread
+from threading import Lock, Thread, Event
 
 bytes_map = ["B", "K", "M", "G"]
 
@@ -45,7 +45,7 @@ def tmp_file(mode, stream, suffix, cb):
     tmp_name = file.name
     downloaded = 0
     total_size = int(stream.headers["content-length"])
-    for chunk in stream.iter_content(chunk_size=8192):
+    for chunk in stream.iter_content(chunk_size=2**14):
       if chunk:
         downloaded = downloaded + len(chunk)
         cb(f"downloading {print_progress_bytes(downloaded, total_size)}")
@@ -173,38 +173,43 @@ class Client:
     self.menu.items = ["add", "remove", "remove (f)", "quit"]
     self.menu.scroll = 0
     self.refreshing = False
+    self.screen_thread = Thread(target=self.screen, daemon=True)
+    self.refresh = Event()
+    self.screen_thread.start()
+
+  def screen(self):
+    while self.refresh.wait():
+      if not self.scr: continue
+      msg = []
+      for i, worker in enumerate(self.workers, start=1):
+        msg.append(f"{i:2} {worker.status}")
+
+      self.scr.erase()
+
+      (mlines, mcols) = self.scr.getmaxyx()
+
+      header = []
+      for line in textwrap.wrap(f"target: {args.target} workers: {client.numworkers} hit: {client.completed} miss: {client.failed}", width=mcols):
+        header.append(line)
+
+      body_y = len(header)
+      window_size = mlines - body_y - 1
+      self.menu.scroll = max(min(self.menu.scroll, len(client.workers) - window_size), 0)
+
+      for i, line in enumerate(header):
+        self.scr.insstr(i, 0, line.ljust(mcols), curses.color_pair(1))
+
+      for i, line in enumerate(msg[self.menu.scroll:window_size + self.menu.scroll], start=body_y):
+        self.scr.insstr(i, 0, line)
+
+      footer = " ".join([f"[{item}]" if i == self.menu.selected_item else f" {item} " for i, item in enumerate(self.menu.items)])
+      self.scr.insstr(mlines - 1, 0, footer.ljust(mcols), curses.color_pair(1))
+      
+      self.scr.refresh()
+      self.refresh.clear()
 
   def refresh_screen(self):
-    if not self.scr or self.refreshing: return
-    self.refreshing = True
-
-    msg = []
-    for i, worker in enumerate(self.workers, start=1):
-      msg.append(f"{i:2} {worker.status}")
-
-    self.scr.erase()
-
-    (mlines, mcols) = self.scr.getmaxyx()
-
-    header = []
-    for line in textwrap.wrap(f"target: {args.target} workers: {client.numworkers} hit: {client.completed} miss: {client.failed}", width=mcols):
-      header.append(line)
-
-    body_y = len(header)
-    window_size = mlines - body_y - 1
-    self.menu.scroll = max(min(self.menu.scroll, len(client.workers) - window_size), 0)
-
-    for i, line in enumerate(header):
-      self.scr.insstr(i, 0, line.ljust(mcols), curses.color_pair(1))
-
-    for i, line in enumerate(msg[self.menu.scroll:window_size + self.menu.scroll], start=body_y):
-      self.scr.insstr(i, 0, line)
-
-    footer = " ".join([f"[{item}]" if i == self.menu.selected_item else f" {item} " for i, item in enumerate(self.menu.items)])
-    self.scr.insstr(mlines - 1, 0, footer.ljust(mcols), curses.color_pair(1))
-    
-    self.scr.refresh()
-    self.refreshing = False
+    self.refresh.set()
   
   def window(self, scr):
     self.scr = scr

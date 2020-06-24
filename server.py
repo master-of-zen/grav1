@@ -5,7 +5,6 @@ import subprocess
 import os, re, json
 from threading import Thread
 
-from monitor import Monitor
 from project import Projects, Project
 
 from flask import Flask, request, send_file, make_response, send_from_directory
@@ -217,8 +216,6 @@ if __name__ == "__main__":
   # TODO: logger and curses
 
   projects = Projects()
-  monitor = Monitor(projects)
-  projects.monitor = monitor
   projects.load_projects(path_out, path_split, path_encode)
 
   print("listening on port", args.port)

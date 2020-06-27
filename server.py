@@ -5,6 +5,7 @@ import subprocess
 import os, re, json
 from threading import Thread
 
+from logger import Logger
 from project import Projects, Project
 
 from flask import Flask, request, send_file, make_response, send_from_directory
@@ -64,10 +65,11 @@ def get_job(jobs):
     workerid = f"{request.environ['REMOTE_ADDR']}:{request.environ['REMOTE_PORT']}"
     new_job.workers.append(workerid)
 
-    print("sent", new_job.projectid, new_job.scene, "to", workerid, new_job.frames)
+    logger.add("net", "sent", new_job.projectid, new_job.scene, "to", workerid, new_job.frames)
 
     resp = make_response(send_file(new_job.path))
     resp.headers["success"] = "1"
+    resp.headers["version"] = version
     resp.headers["projectid"] = new_job.projectid
     resp.headers["filename"] = new_job.filename
     resp.headers["scene"] = new_job.scene
@@ -82,14 +84,11 @@ def get_job(jobs):
     resp.headers["success"] = "0"
     return resp
 
-@app.route("/finish_job", methods=["POST"])
-def receive():
+@app.route("/cancel_job", methods=["POST"])
+def cancel_job():
   sender = request.form["id"]
-  encoder = request.form["encoder"]
-  encoder_params = request.form["encoder_params"]
   projectid = str(request.form["projectid"])
   scene_number = str(request.form["scene"])
-  file = request.files["file"]
 
   if projectid not in projects:
     return "project not found", 200
@@ -100,18 +99,45 @@ def receive():
     return "job not found", 200
 
   job = project.jobs[scene_number]
+
+  if sender in job.workers:
+    job.workers.remove(sender)
+    logger.add("net", "cancel", projectid, scene_number)
+
+  return "saved", 200
+
+@app.route("/finish_job", methods=["POST"])
+def receive():
+  sender = request.form["id"]
+  encoder = request.form["encoder"]
+  encoder_params = request.form["encoder_params"]
+  projectid = str(request.form["projectid"])
+  scene_number = str(request.form["scene"])
+  file = request.files["file"]
+
+  if projectid not in projects:
+    logger.add("info", "project not found", projectid)
+    return "project not found", 200
+
+  project = projects[projectid]
+
+  if scene_number not in project.jobs:
+    logger.add("info", "job not found", projectid, scene_number)
+    return "job not found", 200
+
+  job = project.jobs[scene_number]
   scene = project.scenes[scene_number]
 
   if job.encoder_params != encoder_params:
     if sender in job.workers:
       job.workers.remove(sender)
-    print("discard", projectid, scene_number, "bad params")
+    logger.add("net", "discard", projectid, scene_number, "bad params")
     return "bad params", 200
 
   encoded = os.path.join(project.path_encode, job.encoded_filename)
 
   if scene["filesize"] > 0:
-    print("discard", projectid, scene_number, "already done")
+    logger.add("net", "discard", projectid, scene_number, "already done")
     return "already done", 200
 
   os.makedirs(project.path_encode, exist_ok=True)
@@ -128,7 +154,7 @@ def receive():
   ], capture_output=True)
 
   if dav1d.returncode == 1:
-    print("discard", projectid, scene_number, "dav1d decode error")
+    logger.add("net", "discard", projectid, scene_number, "dav1d decode error")
     return "bad encode", 200
   
   encoded_frames = int(re.search(r"Decoded [0-9]+/([0-9]+) frames", dav1d.stdout.decode("utf-8") + dav1d.stderr.decode("utf-8")).group(1))
@@ -137,7 +163,7 @@ def receive():
     os.remove(encoded)
     if sender in job.workers:
       job.workers.remove(sender)
-    print("discard", projectid, scene_number, "frame mismatch", encoded_frames, scene["frames"])
+    logger.add("net", "discard", projectid, scene_number, "frame mismatch", encoded_frames, scene["frames"])
     return "bad framecount", 200
 
   scene["filesize"] = os.stat(encoded).st_size
@@ -147,13 +173,13 @@ def receive():
     
   del project.jobs[scene_number]
 
-  print("recv", projectid, scene_number, "from", sender)
+  logger.add("net", "recv", projectid, scene_number, "from", sender)
 
   project.update_progress()
   projects.save_projects()
 
   if len(project.jobs) == 0 and project.get_frames() == project.total_frames:
-    print("done", projectid)
+    logger.default("done", projectid)
     projects.add_action(project.complete)
     
   return "saved", 200
@@ -198,13 +224,18 @@ def add_project():
 
     projects.add(Project(
       input_file,
-      path_out, path_split, path_encode,
+      path_out, path_split, path_fpf, path_encode,
       content["encoder"],
       content["encoder_params"],
       content["min_frames"]
       ))
 
   return json.dumps({"success": True})
+
+def get_aomenc_version():
+  p = subprocess.run("aomenc --help", stdout=subprocess.PIPE)
+  r = re.search(r"av1\s+-\s+(.+)\n", p.stdout.decode("utf-8"))
+  return r.group(1).replace("(default)", "").strip()
 
 if __name__ == "__main__":
   import argparse
@@ -213,10 +244,12 @@ if __name__ == "__main__":
   parser.add_argument("--port", dest="port", default=7899)
   args = parser.parse_args()
 
-  # TODO: logger and curses
+  version = get_aomenc_version()
 
-  projects = Projects()
+  logger = Logger()
+
+  projects = Projects(logger)
   projects.load_projects(path_out, path_split, path_encode)
 
-  print("listening on port", args.port)
+  logger.add("default", "listening on port", args.port)
   WSGIServer(app, port=args.port).start()

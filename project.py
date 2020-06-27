@@ -5,7 +5,8 @@ from split import split, verify_split
 from util import tmp_file, ffmpeg
 
 class Projects:
-  def __init__(self):
+  def __init__(self, logger):
+    self.logger = logger
     self.projects = {}
     self.action_queue = []
     self.action_lock = Event()
@@ -30,11 +31,12 @@ class Projects:
       self.action_lock.set()
 
   def add(self, project):
+    project.logger = self.logger
     self.projects[project.projectid] = project
     self.save_projects()
 
-    if project.resume():
-      self.add_action(project.start)
+    if project.start():
+      self.add_action(project.split)
 
   def get_job(self, skip_jobs):
     all_jobs = []
@@ -70,6 +72,7 @@ class Projects:
         "path_in": project.path_in,
         "encoder_params": project.encoder_params,
         "min_frames": project.min_frames,
+        "max_frames": project.max_frames,
         "encoder": project.encoder,
         "input_frames": project.input_total_frames,
         "from_monitor": project.on_complete is not None
@@ -90,6 +93,7 @@ class Projects:
         project["encoder"],
         project["encoder_params"],
         project["min_frames"],
+        project["max_frames"],
         json.load(open(f"scenes/{pid}.json")) if os.path.isfile(f"scenes/{pid}.json") else {},
         project["input_frames"],
         project["priority"],
@@ -98,16 +102,16 @@ class Projects:
       ))
 
 class Project:
-  def __init__(self, filename, path_out, path_split, path_encode, encoder, encoder_params, min_frames, scenes={}, total_frames=0, priority=0, id=0, on_complete=None):
-    self.projectid = id or int(time.time())
+  def __init__(self, filename, path_out, path_split, path_encode, encoder, encoder_params, min_frames, max_frames, scenes={}, total_frames=0, priority=0, id=0, on_complete=None):
+    self.projectid = id or str(time.time())
     self.path_in = filename
     self.path_out = path_out.format(self.projectid)
     self.path_split = path_split.format(self.projectid)
     self.path_encode = path_encode.format(self.projectid)
-    self.log = []
     self.status = "starting"
     self.jobs = {}
     self.min_frames = min_frames
+    self.max_frames = max_frames
     self.encoder = encoder
     self.encoder_params = encoder_params
     self.scenes = scenes
@@ -123,25 +127,26 @@ class Project:
     self.fps = 0
 
     self.on_complete = on_complete
+    self.logger = None
   
   def get_frames(self):
     return sum([self.scenes[scene]["frames"] for scene in self.scenes if self.scenes[scene]["filesize"] != 0])
 
-  def resume(self):
+  def start(self):
     if not os.path.isdir(self.path_split) or len(os.listdir(self.path_split)) == 0:
       return True
-    
+
     self.total_jobs = len(self.scenes)
 
     if os.path.isdir(self.path_encode):
-      self.set_status("getting resume data", True)
+      self.set_status("getting resume data")
 
     for scene in self.scenes:
       file_ivf = os.path.join(self.path_encode, self.get_encoded_filename(scene))
       self.scenes[scene]["filesize"] = os.stat(file_ivf).st_size if os.path.isfile(file_ivf) else 0
       self.total_frames += self.scenes[scene]["frames"]
 
-    print("done loading", self.projectid)
+    self.logger.default(self.projectid, "loaded")
 
     if self.stopped: return
     
@@ -166,9 +171,9 @@ class Project:
           self.scenes[scene]["frames"]
         )
 
-      self.set_status("ready", True)
+      self.set_status("ready")
     else:
-      print("total frame mismatch", self.total_frames, self.input_total_frames)
+      self.logger.default(self.projectid, "total frame mismatch", self.total_frames, self.input_total_frames)
       self.set_status("total frame mismatch")
 
     if os.path.isfile(self.path_out):
@@ -176,36 +181,46 @@ class Project:
     else:
       self.complete()
 
-  def start(self):
-    if not os.path.isdir(self.path_split) or len(os.listdir(self.path_split)) == 0:
-      self.set_status("splitting", True)
-      self.scenes, self.input_total_frames, segments = split(self.path_in, self.path_split, self.min_frames, lambda x, y: print(f"{x}/{y}", end="\r"))
-      self.set_status("verifying split", True)
-      verify_split(self.path_in, self.path_split, segments, lambda x: self.set_status(f"verifying split {x}/{len(segments)}"))
+  def split(self):
+    self.set_status("splitting")
+    self.logger.default(self.projectid, "splitting")
+    self.scenes, self.input_total_frames, segments = split(
+      self.path_in,
+      self.path_split,
+      self.min_frames,
+      self.max_frames,
+      cb=lambda message, cr=False: self.logger.default(self.projectid, message, cr=cr)
+    )
+    self.set_status("verifying split")
+    verify_split(
+      self.path_in,
+      self.path_split,
+      segments,
+      cb=lambda message, cr=False: self.logger.default(self.projectid, message, cr=cr)
+    )
 
-    self.resume()
+    self.start()
 
   def complete(self):
     if len(self.jobs) == 0 and self.get_frames() == self.total_frames:
-      self.set_status("done! joining files", True)
+      self.set_status("done! joining files")
       self.concat()
       self.set_status("complete")
-      if self.on_complete: self.on_complete(self, self.path_in, self.path_out)
+      self.logger.default(self.projectid, "completed")
+      if self.on_complete: self.on_complete(self)
 
   def update_progress(self):
     if self.encode_start: self.fps = self.encoded_frames / max(time() - self.encode_start, 1)
     else: self.fps = 0
 
-  def set_status(self, msg, log=False):
-    if log:
-      self.log.append(msg)
+  def set_status(self, msg):
     self.status = msg
 
   def get_encoded_filename(self, scene_n):
-    return scene_n + ".ivf"
+    return f"{scene_n}.ivf"
 
   def concat(self):
-    print("concat", self.projectid)
+    self.logger.default(self.projectid, "concat")
     keys = list(self.scenes.keys())
     keys.sort()
     scenes = [os.path.join(self.path_encode, self.get_encoded_filename(os.path.splitext(scene)[0])).replace("\\", "/") for scene in keys]
@@ -213,7 +228,7 @@ class Project:
     with tmp_file("w", content) as file:
       cmd = f"ffmpeg -hide_banner -f concat -safe 0 -y -i".split(" ")
       cmd.extend([file, "-c", "copy", self.path_out])
-      ffmpeg(cmd, lambda x: self.set_status(f"concat {x}, {self.total_frames}"))
+      ffmpeg(cmd, lambda x: (self.set_status(f"concat {x}/{self.total_frames}"), self.logger.default(self.projectid, f"concat {x}/{self.total_frames}", cr=True)))
 
 class Job:
   def __init__(self, projectid, scene, encoder, path, encoded_filename, priority, encoder_params, start, frames):

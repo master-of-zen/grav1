@@ -10,7 +10,8 @@ import sys, struct, os, subprocess, re
 # I retain no rights or control over distribution.
 
 # Fields meanings: <source root>/av1/encoder/firstpass.h
-fields = ["frame", "weight", "intra_error", "frame_avg_wavelet_energy",
+fields = [
+  "frame", "weight", "intra_error", "frame_avg_wavelet_energy",
   "coded_error", "sr_coded_error", "tr_coded_error", "pcnt_inter",
   "pcnt_motion", "pcnt_second_ref", "pcnt_third_ref", "pcnt_neutral",
   "intra_skip_pct", "inactive_zone_rows", "inactive_zone_cols", "MVr",

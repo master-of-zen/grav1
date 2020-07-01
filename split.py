@@ -96,6 +96,7 @@ def split(video, path_split, min_frames=-1, max_frames=-1, cb=None):
       }
 
     reencode = True
+
   frames = [str(f) for f in frames]
 
   cmd = [
@@ -104,17 +105,21 @@ def split(video, path_split, min_frames=-1, max_frames=-1, cb=None):
     "-i", video,
     "-map", "0:v:0",
     "-avoid_negative_ts", "1",
+    "-vsync", "0"
   ]
 
-  # this has a 50% chance of failing if the file is the product of a concat
-  # can be fixed be re-encoding the file whole beforehand
   if reencode: 
     cmd.extend([
       "-c:v", "libx264",
       "-x264-params", "scenecut=-1",
-      "-preset", "ultrafast",
+      "-preset", "veryfast",
+      "-threads", "16",
       "-crf", "0",
       "-force_key_frames", "expr:" + "+".join([f"eq(n,{int(f)})" for f in frames])
+    ])
+  else:
+    cmd.extend([
+      "-c:v", "copy"
     ])
 
   cmd.extend([
@@ -124,7 +129,7 @@ def split(video, path_split, min_frames=-1, max_frames=-1, cb=None):
   ])
 
   os.makedirs(path_split, exist_ok=True)
-  ffmpeg(cmd, lambda x: cb(f"{x}/{total_frames}", cr=True))
+  ffmpeg(cmd, lambda x: cb(f"splitting {x}/{total_frames}", cr=True))
 
   return splits, total_frames, segments
 
@@ -235,6 +240,7 @@ def correct_split(path_in, path_out, start, length, cb=None):
       "-map", "0:v:0",
       "-c:v", "libx264",
       "-crf", "0",
+      "-vsync", "0",
       "-force_key_frames", f"expr:eq(n,{start})",
       "-x264-params", "scenecut=0",
       "-vf", f"select=gte(n\\,{start})",
@@ -245,25 +251,31 @@ def correct_split(path_in, path_out, start, length, cb=None):
 
 # input the source and segments produced by split()
 def verify_split(path_in, path_split, segments, cb=None):
+  total_frames = 0
   for i, segment in enumerate(segments, start=1):
     path_segment = os.path.join(path_split, segment)
     segment_n = str(os.path.splitext(segment)[0])
     num_frames = get_frames(path_segment)
 
-    if num_frames != segments[segment]["length"]:
+    if cb: cb(f"verifying splits: {i}/{len(segments)}", cr=True)
+
+    if total_frames != segments[segment]["start"]:
+      cb(f"misalignment at {segment} expected: {segments[segment]['start']}, got: {total_frames}")
+    elif num_frames != segments[segment]["length"]:
       cb(f"bad framecount {segment} expected: {segments[segment]['length']}, got: {num_frames}")
-      os.makedirs(os.path.join(path_split, "old"), exist_ok=True)
-      os.rename(path_segment, os.path.join(path_split, "old", segment))
-      correct_split(path_in, path_segment, segments[segment]["start"], segments[segment]["length"], lambda x, cr=False: cb(x, cr=cr))
     else:
       num_frames_slow = get_frames(path_segment, False)
       if num_frames != num_frames_slow:
         cb(f"bad framecount {segment} expected: {num_frames}, got: {num_frames_slow}")
-        os.makedirs(os.path.join(path_split, "old"), exist_ok=True)
-        os.rename(path_segment, os.path.join(path_split, "old", segment))
-        correct_split(path_in, path_segment, segments[segment]["start"], segments[segment]["length"], lambda x, cr=False: cb(x, cr=cr))
+      else:
+        total_frames += num_frames
+        continue
+
+    os.makedirs(os.path.join(path_split, "old"), exist_ok=True)
+    os.rename(path_segment, os.path.join(path_split, "old", segment))
+    correct_split(path_in, path_segment, segments[segment]["start"], segments[segment]["length"], lambda x, cr=False: cb(x, cr=cr))
     
-    if cb: cb(f"verifying splits: {i}/{len(segments)}", cr=True)
+    total_frames += num_frames
 
 # this is an example program
 if __name__ == "__main__" and False:
@@ -283,7 +295,7 @@ if __name__ == "__main__" and False:
     args.split_path,
     min_frames=args.min_frames,
     max_frames=args.max_frames,
-    cb=lambda x, total_frames: print(f"{x}/{total_frames}", end="\r")
+    cb=lambda x, cr=False: print(x, end="\r" if cr else "\n")
   )
 
   print(total_frames, "frames")
@@ -293,7 +305,7 @@ if __name__ == "__main__" and False:
     args.input,
     args.split_path,
     segments,
-    cb=lambda x: print(f"{x}/{len(segments)}", end="\r")
+    cb=lambda x, cr=False: print(x, end="\r" if cr else "\n")
   )
 
   json.dump(splits, open(args.splits, "w+"))

@@ -28,7 +28,7 @@ def tmp_file(mode, content, suffix=""):
     yield tmp_name
   finally:
     os.unlink(tmp_name)
-  
+
 def ffmpeg(cmd, cb):
   pipe = subprocess.Popen(cmd,
     stdout=subprocess.PIPE,

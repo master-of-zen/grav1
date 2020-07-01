@@ -1,8 +1,8 @@
-import os, json, time
+import os, json, time, subprocess, re
 from threading import Thread, Event
 
 from split import split, verify_split
-from util import tmp_file, ffmpeg
+from util import tmp_file, ffmpeg, get_frames
 
 class Projects:
   def __init__(self, logger):
@@ -10,8 +10,8 @@ class Projects:
     self.projects = {}
     self.action_queue = []
     self.action_lock = Event()
+    
     Thread(target=self.action_loop, daemon=True).start()
-    self.monitor = None
   
   def action_loop(self):
     while self.action_lock.wait():
@@ -30,8 +30,17 @@ class Projects:
     if len(self.action_queue) > 0:
       self.action_lock.set()
 
-  def add(self, project):
+  def project_on_complete(self, project):
+    self.add_action(lambda: actions[project.action](self.logger, project))
+
+  def add(self, project, action=""):
+    self.logger.default("added project", project.projectid)
     project.logger = self.logger
+
+    if action:
+      project.action = action
+      project.on_complete = self.project_on_complete
+
     self.projects[project.projectid] = project
     self.save_projects()
 
@@ -50,8 +59,97 @@ class Projects:
 
     return all_jobs[0] if len(all_jobs) > 0 else None
 
-  def verify_encode(self, encode):
-    pass
+  def miss(self, sender):
+    if not sender: return
+
+  def hit(self, sender, frames):
+    if not sender: return
+
+  def check_job(self, projectid, sender, client, encoder, encoder_params, scene_number, file):
+    if projectid not in self.projects:
+      self.miss(sender)
+      self.logger.add("info", "project not found", projectid)
+      return "project not found"
+
+    project = self.projects[projectid]
+
+    if scene_number not in project.jobs:
+      self.logger.add("info", "job not found", projectid, scene_number)
+      self.miss(sender)
+      return "job not found"
+
+    job = project.jobs[scene_number]
+    scene = project.scenes[scene_number]
+
+    if job.encoder_params != encoder_params or job.encoder != encoder:
+      if client in job.workers:
+        job.workers.remove(client)
+      self.logger.add("net", "discard from", sender, projectid, scene_number, "bad params",)
+      self.miss(sender)
+      return "bad params"
+
+    encoded = os.path.join(project.path_encode, job.encoded_filename)
+
+    if scene["filesize"] > 0:
+      self.logger.add("net", "discard from", sender, projectid, scene_number, "already done")
+      self.miss(sender)
+      return "already done"
+
+    os.makedirs(project.path_encode, exist_ok=True)
+    file.save(encoded)
+    
+    if os.stat(encoded).st_size == 0:
+      self.logger.add("net", "discard from", sender, projectid, scene_number, "bad upload")
+      self.miss(sender)
+      return "bad upload"
+    
+    if job.encoder == "aom":
+      dav1d = subprocess.run([
+        "dav1d",
+        "-i", encoded,
+        "-o", "/dev/null",
+        "--framethreads", "1",
+        "--tilethreads", "16"
+      ], capture_output=True)
+
+      if dav1d.returncode == 1:
+        self.logger.add("net", "discard from", sender, projectid, scene_number, "dav1d decode error")
+        self.miss(sender)
+        return "bad encode"
+      
+      encoded_frames = int(re.search(r"Decoded [0-9]+/([0-9]+) frames", dav1d.stdout.decode("utf-8") + dav1d.stderr.decode("utf-8")).group(1))
+    else:
+      encoded_frames = get_frames(encoded)
+
+    if scene["frames"] != encoded_frames:
+      os.remove(encoded)
+      if client in job.workers:
+        job.workers.remove(client)
+      self.logger.add("net", "discard from", sender, projectid, scene_number, "frame mismatch", encoded_frames, "/", scene["frames"])
+      self.miss(sender)
+      return "frame mismatch"
+
+    scene["filesize"] = os.stat(encoded).st_size
+
+    if client in job.workers:
+      project.encoded_frames += scene["frames"]
+      
+    del project.jobs[scene_number]
+
+    self.logger.add("net", "recv", projectid, scene_number, "from", sender, client)
+    self.hit(sender, scene["frames"])
+
+    project.update_progress()
+    self.save_projects()
+
+    if len(project.jobs) == 0 and project.get_frames() == project.total_frames:
+      self.logger.default("done", projectid)
+      self.add_action(project.complete)
+      
+    return "saved"
+
+  def __len__(self):
+    return len(self.projects)
 
   def __getitem__(self, key):
     return self.projects[key]
@@ -75,7 +173,7 @@ class Projects:
         "max_frames": project.max_frames,
         "encoder": project.encoder,
         "input_frames": project.input_total_frames,
-        "from_monitor": project.on_complete is not None
+        "on_complete": project.action
       }
       json.dump(project.scenes, open(f"scenes/{project.projectid}.json", "w+"), indent=2)
     
@@ -97,12 +195,11 @@ class Projects:
         json.load(open(f"scenes/{pid}.json")) if os.path.isfile(f"scenes/{pid}.json") else {},
         project["input_frames"],
         project["priority"],
-        pid,
-        self.monitor.on_complete if self.monitor and "from_monitor" in project and project["from_monitor"] else None
-      ))
+        pid
+      ), project["on_complete"] if "on_complete" in project else "")
 
 class Project:
-  def __init__(self, filename, path_out, path_split, path_encode, encoder, encoder_params, min_frames, max_frames, scenes={}, total_frames=0, priority=0, id=0, on_complete=None):
+  def __init__(self, filename, path_out, path_split, path_encode, encoder, encoder_params, min_frames, max_frames, scenes={}, total_frames=0, priority=0, id=0):
     self.projectid = id or str(time.time())
     self.path_in = filename
     self.path_out = path_out.format(self.projectid)
@@ -126,7 +223,8 @@ class Project:
     self.encode_start = None
     self.fps = 0
 
-    self.on_complete = on_complete
+    self.action = ""
+    self.on_complete = None
     self.logger = None
   
   def get_frames(self):
@@ -207,7 +305,8 @@ class Project:
       self.concat()
       self.set_status("complete")
       self.logger.default(self.projectid, "completed")
-      if self.on_complete: self.on_complete(self)
+      if self.on_complete:
+        self.on_complete(self)
 
   def update_progress(self):
     if self.encode_start: self.fps = self.encoded_frames / max(time() - self.encode_start, 1)

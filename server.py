@@ -69,13 +69,13 @@ def get_job(jobs):
 
     resp = make_response(send_file(new_job.path))
     resp.headers["success"] = "1"
-    resp.headers["version"] = version
     resp.headers["projectid"] = new_job.projectid
     resp.headers["filename"] = new_job.filename
     resp.headers["scene"] = new_job.scene
     resp.headers["id"] = workerid
     resp.headers["encoder"] = new_job.encoder
     resp.headers["encoder_params"] = new_job.encoder_params
+    resp.headers["version"] = encoder_versions[new_job.encoder]
     resp.headers["start"] = new_job.start
     resp.headers["frames"] = new_job.frames
     return resp
@@ -86,7 +86,7 @@ def get_job(jobs):
 
 @app.route("/cancel_job", methods=["POST"])
 def cancel_job():
-  sender = request.form["id"]
+  client = request.form["client"]
   projectid = str(request.form["projectid"])
   scene_number = str(request.form["scene"])
 
@@ -100,89 +100,28 @@ def cancel_job():
 
   job = project.jobs[scene_number]
 
-  if sender in job.workers:
-    job.workers.remove(sender)
-    logger.add("net", "cancel", projectid, scene_number)
+  if client in job.workers:
+    job.workers.remove(client)
+    logger.add("net", "cancel", projectid, scene_number, "by", client)
 
   return "saved", 200
 
 @app.route("/finish_job", methods=["POST"])
 def receive():
-  sender = request.form["id"]
+  client = request.form["client"]
+  sender = request.form["id"] if "id" in request.form else ""
   encoder = request.form["encoder"]
+  version = request.form["version"]
+
+  if version != encoder_versions[encoder]:
+    return "bad encoder version", 200
+
   encoder_params = request.form["encoder_params"]
   projectid = str(request.form["projectid"])
   scene_number = str(request.form["scene"])
   file = request.files["file"]
 
-  if projectid not in projects:
-    logger.add("info", "project not found", projectid)
-    return "project not found", 200
-
-  project = projects[projectid]
-
-  if scene_number not in project.jobs:
-    logger.add("info", "job not found", projectid, scene_number)
-    return "job not found", 200
-
-  job = project.jobs[scene_number]
-  scene = project.scenes[scene_number]
-
-  if job.encoder_params != encoder_params:
-    if sender in job.workers:
-      job.workers.remove(sender)
-    logger.add("net", "discard", projectid, scene_number, "bad params")
-    return "bad params", 200
-
-  encoded = os.path.join(project.path_encode, job.encoded_filename)
-
-  if scene["filesize"] > 0:
-    logger.add("net", "discard", projectid, scene_number, "already done")
-    return "already done", 200
-
-  os.makedirs(project.path_encode, exist_ok=True)
-  file.save(encoded)
-  
-  if os.stat(encoded).st_size == 0: return "bad", 200
-  
-  dav1d = subprocess.run([
-    "dav1d",
-    "-i", encoded,
-    "-o", "/dev/null",
-    "--framethreads", "1",
-    "--tilethreads", "16"
-  ], capture_output=True)
-
-  if dav1d.returncode == 1:
-    logger.add("net", "discard", projectid, scene_number, "dav1d decode error")
-    return "bad encode", 200
-  
-  encoded_frames = int(re.search(r"Decoded [0-9]+/([0-9]+) frames", dav1d.stdout.decode("utf-8") + dav1d.stderr.decode("utf-8")).group(1))
-
-  if scene["frames"] != encoded_frames:
-    os.remove(encoded)
-    if sender in job.workers:
-      job.workers.remove(sender)
-    logger.add("net", "discard", projectid, scene_number, "frame mismatch", encoded_frames, scene["frames"])
-    return "bad framecount", 200
-
-  scene["filesize"] = os.stat(encoded).st_size
-
-  if sender in job.workers:
-    project.encoded_frames += scene["frames"]
-    
-  del project.jobs[scene_number]
-
-  logger.add("net", "recv", projectid, scene_number, "from", sender)
-
-  project.update_progress()
-  projects.save_projects()
-
-  if len(project.jobs) == 0 and project.get_frames() == project.total_frames:
-    logger.default("done", projectid)
-    projects.add_action(project.complete)
-    
-  return "saved", 200
+  return projects.check_job(projectid, sender, client, encoder, encoder_params, scene_number, file), 200
 
 @app.route("/api/list_directory", methods=["GET"])
 @cross_origin()
@@ -219,22 +158,46 @@ def modify_project(projectid):
 def add_project():
   content = request.json
 
+  logger.add("net", "add project", content["input"])
+
   for input_file in content["input"]:
     if not os.path.isfile(input_file): continue
 
-    projects.add(Project(
+    self.projects.add(Project(
       input_file,
-      path_out, path_split, path_fpf, path_encode,
+      path_out,
+      path_split,
+      path_encode, 
       content["encoder"],
       content["encoder_params"],
-      content["min_frames"]
-      ))
+      content["min_frames"],
+      content["max_frames"],
+      priority=content["priority"]
+    ), content["on_complete"])
 
   return json.dumps({"success": True})
+
+@app.route("/api/get_info", methods=["GET"])
+@cross_origin()
+def get_info():
+  info = {
+    "encoders": {
+      "libaom": encoder_versions["aom"],
+      "libvpx": encoder_versions["vpx"],
+    },
+    "projects": len(projects),
+    "jobs": len([job for pid in projects.projects for job in projects[pid].jobs])
+  }
+  return json.dumps(info)
 
 def get_aomenc_version():
   p = subprocess.run("aomenc --help", stdout=subprocess.PIPE)
   r = re.search(r"av1\s+-\s+(.+)\n", p.stdout.decode("utf-8"))
+  return r.group(1).replace("(default)", "").strip()
+
+def get_vpxenc_version():
+  p = subprocess.run(["vpxenc", "--help"], stdout=subprocess.PIPE)
+  r = re.search(r"vp9\s+-\s+(.+)\n", p.stdout.decode("utf-8"))
   return r.group(1).replace("(default)", "").strip()
 
 if __name__ == "__main__":
@@ -244,7 +207,7 @@ if __name__ == "__main__":
   parser.add_argument("--port", dest="port", default=7899)
   args = parser.parse_args()
 
-  version = get_aomenc_version()
+  encoder_versions = {"aom": get_aomenc_version(), "vpx": get_vpxenc_version()}
 
   logger = Logger()
 

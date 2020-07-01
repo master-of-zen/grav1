@@ -12,9 +12,8 @@ message me on the av1 discord if you're actually going to use this
 <img src="https://github.com/wwww-wwww/grav1/raw/master/images/website.png" width="600">
 
 ### latest significant changes:
-- vpx encodes to use ivf
-- web client preview analyzer can now also do vpx segments
-  ![](https://cdn.discordapp.com/attachments/662576870642024459/714416252361244702/Screenshot_2020-05-25_Analyzer1.png)
+- split algorithm is updated [here](https://github.com/wwww-wwww/grav1ty) first
+- scene information is stored individually for each project
 
 ### requirements
 server:
@@ -26,6 +25,9 @@ wsgiserver
 server (system):
 ```
 ffmpeg
+aomenc
+vpxenc
+dav1d
 ```
 client:  
 ```
@@ -41,7 +43,7 @@ vpxenc
 
 ### usage
 
-this only supports aomenc and libvpx-vp9 provided by ffmpeg  
+this only supports aomenc and vpxenc  
 (I don't plan on supporting other encoders)
 
 start webserver (default port: 7899)  
@@ -49,12 +51,41 @@ start webserver (default port: 7899)
 `python server.py --port 1234`
 
 starting up a worker  
-`python grav1c.py http://target --workers=4`  
+`python grav1c.py http://target --workers 4`  
 
 access the server through the [web client](https://encode.grass.moe) (incomplete)
 
 ## web ui api
 If you want your program to support my web client, here are the specifications:
+
+## Get Server Info ##
+
+This can be a map with keys and values of any type
+
+Name: `/api/get_info`
+
+Method: GET
+
+**Parameters:**
+
+None
+
+**Returns:**
+
+JSON object
+
+**Example:**
+
+```json
+{
+  "encoders": {
+    "libaom": "AOMedia Project AV1 Encoder 2.0.0-487-ga822b3cc6",
+    "libvpx": "WebM Project VP9 Encoder v1.8.2-209-gde4aedaec"
+  },
+  "projects": 15,
+  "some other": "information"
+}
+```
 
 ## Get Projects ##
 
@@ -68,9 +99,7 @@ None
 
 **Returns:**
 
-HTTP Status Code                  | Response
-----------------------------------|------------
-200                               | JSON List of objects
+JSON list of objects
 
 **Example:**
 
@@ -115,11 +144,11 @@ Requires a Json object in the body
 Property                          | Type    | Description
 ----------------------------------|---------|------------
 `input`                           | list    | List of filenames / paths
-`encoder`                         | string  | Encoder used (aom/vp9/etc.)
+`encoder`                         | string  | Encoder used (aom/vpx/etc.)
 `encoder_params`                  | string  | Encoding parameters
-`threshold`                       | integer | (Optional) Threshold for scene detection
 `min_frames`                      | integer | (Optional) Minimum amount of frames per segment
 `max_frames`                      | integer | (Optional) Maximum amount of frames per segment
+`on_complete`                     | string  | (Optional) Action to perform on completion of encode
 
 **Example:**
 
@@ -127,17 +156,15 @@ Property                          | Type    | Description
 {
   "input": ["1.mkv", "2.mkv"],
   "encoder": "aom",
-  "encoder_params": "-b 10 --cpu-used=3",
-  "threshold": 50,
-  "min_frames": 140,
-  "max_frames": 160
+  "encoder_params": "--lag-in-frames=25 -b 10 --cpu-used=3",
+  "min_frames": 25,
+  "max_frames": 160,
+  "on_complete": "merge"
 }
 ```
 **Returns:**
 
-HTTP Status Code                  | Response
-----------------------------------|------------
-200                               | JSON object below
+JSON object
 
 Property                          | Type    | Description
 ----------------------------------|---------|------------
@@ -180,9 +207,7 @@ Property                          | Type    | Description
 
 **Returns:**
 
-HTTP Status Code                  | Response
-----------------------------------|------------
-200                               | JSON object below
+JSON object
 
 Property                          | Type    | Description
 ----------------------------------|---------|------------
@@ -218,9 +243,7 @@ Parameter                         | Type    | Description
 
 **Returns:**
 
-HTTP Status Code                  | Response
-----------------------------------|------------
-200                               | JSON object below
+JSON object
 
 Property                          | Type    | Description
 ----------------------------------|---------|------------

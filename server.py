@@ -162,7 +162,9 @@ def add_project():
   logger.add("net", "add project", content["input"])
 
   for input_file in content["input"]:
-    if not os.path.isfile(input_file): continue
+    if not os.path.isfile(input_file):
+      logger.add("default", "add project failed", input_file, "not found")
+      continue
 
     self.projects.add(Project(
       input_file,

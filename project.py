@@ -4,6 +4,8 @@ from threading import Thread, Event
 from split import split, verify_split
 from util import tmp_file, ffmpeg, get_frames
 
+from actions import actions
+
 class Projects:
   def __init__(self, logger):
     self.logger = logger

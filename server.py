@@ -42,11 +42,11 @@ def get_projects():
     p["input"] = project.path_in
     p["frames"] = project.get_frames()
     p["total_frames"] = project.input_total_frames
-    p["fps"] = project.fps
     p["jobs"] = len(project.jobs)
     p["total_jobs"] = project.total_jobs
     p["status"] = project.status
     p["encoder_params"] = project.encoder_params
+    p["ffmpeg_params"] = project.ffmpeg_params
     p["encoder"] = project.encoder
     p["scenes"] = project.scenes
     p["priority"] = project.priority
@@ -75,7 +75,8 @@ def get_job(jobs):
     resp.headers["id"] = workerid
     resp.headers["encoder"] = new_job.encoder
     resp.headers["encoder_params"] = new_job.encoder_params
-    resp.headers["version"] = encoder_versions[new_job.encoder]
+    resp.headers["ffmpeg_params"] = new_job.ffmpeg_params
+    resp.headers["version"] = versions[new_job.encoder]
     resp.headers["start"] = new_job.start
     resp.headers["frames"] = new_job.frames
     return resp
@@ -86,7 +87,7 @@ def get_job(jobs):
 
 @app.route("/cancel_job", methods=["POST"])
 def cancel_job():
-  client = request.form["client"]
+  client = request.form["client"] if "client" in request.form else request.form["id"]
   projectid = str(request.form["projectid"])
   scene_number = str(request.form["scene"])
 
@@ -109,19 +110,19 @@ def cancel_job():
 @app.route("/finish_job", methods=["POST"])
 def receive():
   client = request.form["client"]
-  sender = request.form["id"] if "id" in request.form else ""
   encoder = request.form["encoder"]
   version = request.form["version"]
 
-  if version != encoder_versions[encoder]:
+  if version != versions[encoder]:
     return "bad encoder version", 200
 
   encoder_params = request.form["encoder_params"]
+  ffmpeg_params = request.form["ffmpeg_params"]
   projectid = str(request.form["projectid"])
   scene_number = str(request.form["scene"])
   file = request.files["file"]
 
-  return projects.check_job(projectid, sender, client, encoder, encoder_params, scene_number, file), 200
+  return projects.check_job(projectid, client, encoder, encoder_params, ffmpeg_params, scene_number, file), 200
 
 @app.route("/api/list_directory", methods=["GET"])
 @cross_origin()
@@ -170,9 +171,10 @@ def add_project():
       path_encode, 
       content["encoder"],
       content["encoder_params"],
-      content["min_frames"],
-      content["max_frames"],
-      priority=content["priority"]
+      ffmpeg_params=content["ffmpeg_params"] if "ffmpeg_params" in content else "",
+      min_frames=content["min_frames"] if "min_frames" in content else -1,
+      max_frames=content["max_frames"] if "max_frames" in content else -1,
+      priority=content["priority"] if "priority" in content else 0
     ), content["on_complete"])
 
   return json.dumps({"success": True})
@@ -181,14 +183,24 @@ def add_project():
 @cross_origin()
 def get_info():
   info = {
-    "encoders": {
-      "libaom": encoder_versions["aom"],
-      "libvpx": encoder_versions["vpx"],
+    "versions": {
+      "libaom": versions["aom"],
+      "libvpx": versions["vpx"],
+      "dav1d": versions["dav1d"]
     },
     "projects": len(projects),
-    "jobs": len([job for pid in projects.projects for job in projects[pid].jobs])
+    "jobs": len([job for pid in projects.projects for job in projects[pid].jobs]),
+    "frames per hour": {
+      "since": projects.telemetry["fph_time"],
+      "frames": projects.telemetry["fph"]
+    },
+    "userstats": projects.userstats
   }
   return json.dumps(info)
+
+def get_dav1d_version():
+  p = subprocess.run("dav1d -v", stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  return p.stdout.decode("utf-8").strip() + p.stderr.decode("utf-8").strip()
 
 def get_aomenc_version():
   p = subprocess.run("aomenc --help", stdout=subprocess.PIPE)
@@ -207,7 +219,11 @@ if __name__ == "__main__":
   parser.add_argument("--port", dest="port", default=7899)
   args = parser.parse_args()
 
-  encoder_versions = {"aom": get_aomenc_version(), "vpx": get_vpxenc_version()}
+  versions = {
+    "aom": get_aomenc_version(),
+    "vpx": get_vpxenc_version(),
+    "dav1d": get_dav1d_version()
+  }
 
   logger = Logger()
 

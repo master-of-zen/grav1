@@ -10,9 +10,9 @@ class Projects:
     self.projects = {}
     self.action_queue = []
     self.action_lock = Event()
-    
+    self.telemetry = {"encodes": [], "fph": 0, "fph_time": 0}
     Thread(target=self.action_loop, daemon=True).start()
-  
+
   def action_loop(self):
     while self.action_lock.wait():
       while len(self.action_queue) > 0:
@@ -31,7 +31,7 @@ class Projects:
       self.action_lock.set()
 
   def project_on_complete(self, project):
-    self.add_action(lambda: actions[project.action](self.logger, project))
+    self.add_action(lambda: actions[project.action](self.logger, self, project))
 
   def add(self, project, action=""):
     self.logger.default("added project", project.projectid)
@@ -59,15 +59,16 @@ class Projects:
 
     return all_jobs[0] if len(all_jobs) > 0 else None
 
-  def miss(self, sender):
-    if not sender: return
+  def hit(self, frames):
+    now = time.time()
+    self.telemetry["encodes"] = list(filter(lambda x: (now - x[1]) < 3600, self.telemetry["encodes"]))
+    self.telemetry["encodes"].append((frames, now))
 
-  def hit(self, sender, frames):
-    if not sender: return
+    self.telemetry["fph"] = sum([x[0] for x in self.telemetry["encodes"]])
+    self.telemetry["fph_time"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.telemetry["encodes"][-1][1]))
 
-  def check_job(self, projectid, sender, client, encoder, encoder_params, scene_number, file):
+  def check_job(self, projectid, client, encoder, encoder_params, ffmpeg_params, scene_number, file):
     if projectid not in self.projects:
-      self.miss(sender)
       self.logger.add("info", "project not found", projectid)
       return "project not found"
 
@@ -75,32 +76,28 @@ class Projects:
 
     if scene_number not in project.jobs:
       self.logger.add("info", "job not found", projectid, scene_number)
-      self.miss(sender)
       return "job not found"
 
     job = project.jobs[scene_number]
     scene = project.scenes[scene_number]
 
-    if job.encoder_params != encoder_params or job.encoder != encoder:
+    if job.encoder_params != encoder_params or job.ffmpeg_params != ffmpeg_params or job.encoder != encoder:
       if client in job.workers:
         job.workers.remove(client)
-      self.logger.add("net", "discard from", sender, projectid, scene_number, "bad params",)
-      self.miss(sender)
+      self.logger.add("net", "discard from", client, projectid, scene_number, "bad params")
       return "bad params"
 
     encoded = os.path.join(project.path_encode, job.encoded_filename)
 
     if scene["filesize"] > 0:
-      self.logger.add("net", "discard from", sender, projectid, scene_number, "already done")
-      self.miss(sender)
+      self.logger.add("net", "discard from", client, projectid, scene_number, "already done")
       return "already done"
 
     os.makedirs(project.path_encode, exist_ok=True)
     file.save(encoded)
     
     if os.stat(encoded).st_size == 0:
-      self.logger.add("net", "discard from", sender, projectid, scene_number, "bad upload")
-      self.miss(sender)
+      self.logger.add("net", "discard from", client, projectid, scene_number, "bad upload")
       return "bad upload"
     
     if job.encoder == "aom":
@@ -113,8 +110,7 @@ class Projects:
       ], capture_output=True)
 
       if dav1d.returncode == 1:
-        self.logger.add("net", "discard from", sender, projectid, scene_number, "dav1d decode error")
-        self.miss(sender)
+        self.logger.add("net", "discard from", client, projectid, scene_number, "dav1d decode error")
         return "bad encode"
       
       encoded_frames = int(re.search(r"Decoded [0-9]+/([0-9]+) frames", dav1d.stdout.decode("utf-8") + dav1d.stderr.decode("utf-8")).group(1))
@@ -125,8 +121,7 @@ class Projects:
       os.remove(encoded)
       if client in job.workers:
         job.workers.remove(client)
-      self.logger.add("net", "discard from", sender, projectid, scene_number, "frame mismatch", encoded_frames, "/", scene["frames"])
-      self.miss(sender)
+      self.logger.add("net", "discard from", client, projectid, scene_number, "frame mismatch", encoded_frames, "/", scene["frames"])
       return "frame mismatch"
 
     scene["filesize"] = os.stat(encoded).st_size
@@ -136,10 +131,9 @@ class Projects:
       
     del project.jobs[scene_number]
 
-    self.logger.add("net", "recv", projectid, scene_number, "from", sender, client)
-    self.hit(sender, scene["frames"])
+    self.logger.add("net", "recv", projectid, scene_number, "from", client)
+    self.hit(scene["frames"])
 
-    project.update_progress()
     self.save_projects()
 
     if len(project.jobs) == 0 and project.get_frames() == project.total_frames:
@@ -164,11 +158,14 @@ class Projects:
 
   def save_projects(self):
     dict_projects = {}
+    os.makedirs("scenes", exist_ok=True)
+
     for project in self.projects.values():
       dict_projects[project.projectid] = {
         "priority": project.priority,
         "path_in": project.path_in,
         "encoder_params": project.encoder_params,
+        "ffmpeg_params": project.ffmpeg_params,
         "min_frames": project.min_frames,
         "max_frames": project.max_frames,
         "encoder": project.encoder,
@@ -190,16 +187,17 @@ class Projects:
         path_out, path_split, path_encode, 
         project["encoder"],
         project["encoder_params"],
-        project["min_frames"],
-        project["max_frames"],
+        project["ffmpeg_params"] if "ffmpeg_params" in project else "",
+        project["min_frames"] if "min_frames" in project else -1,
+        project["max_frames"] if "max_frames" in project else -1,
         json.load(open(f"scenes/{pid}.json")) if os.path.isfile(f"scenes/{pid}.json") else {},
-        project["input_frames"],
-        project["priority"],
+        project["input_frames"] if "input_frames" in project else 0,
+        project["priority"] if "priority" in project else 0,
         pid
       ), project["on_complete"] if "on_complete" in project else "")
 
 class Project:
-  def __init__(self, filename, path_out, path_split, path_encode, encoder, encoder_params, min_frames, max_frames, scenes={}, total_frames=0, priority=0, id=0):
+  def __init__(self, filename, path_out, path_split, path_encode, encoder, encoder_params, ffmpeg_params="", min_frames=-1, max_frames=-1, scenes={}, total_frames=0, priority=0, id=0):
     self.projectid = id or str(time.time())
     self.path_in = filename
     self.path_out = path_out.format(self.projectid)
@@ -211,6 +209,7 @@ class Project:
     self.max_frames = max_frames
     self.encoder = encoder
     self.encoder_params = encoder_params
+    self.ffmpeg_params = ffmpeg_params
     self.scenes = scenes
     self.total_jobs = 0
     self.priority = priority
@@ -221,7 +220,6 @@ class Project:
 
     self.encoded_frames = 0
     self.encode_start = None
-    self.fps = 0
 
     self.action = ""
     self.on_complete = None
@@ -256,6 +254,7 @@ class Project:
         encoded_filename = self.get_encoded_filename(scene)
 
         scene_setting = self.encoder_params
+        scene_setting_ffmpeg = self.ffmpeg_params
 
         self.jobs[scene] = Job(
           self.projectid,
@@ -265,6 +264,7 @@ class Project:
           encoded_filename,
           self.priority,
           scene_setting,
+          scene_setting_ffmpeg,
           self.scenes[scene]["start"],
           self.scenes[scene]["frames"]
         )
@@ -308,10 +308,6 @@ class Project:
       if self.on_complete:
         self.on_complete(self)
 
-  def update_progress(self):
-    if self.encode_start: self.fps = self.encoded_frames / max(time() - self.encode_start, 1)
-    else: self.fps = 0
-
   def set_status(self, msg):
     self.status = msg
 
@@ -330,7 +326,7 @@ class Project:
       ffmpeg(cmd, lambda x: (self.set_status(f"concat {x}/{self.total_frames}"), self.logger.default(self.projectid, f"concat {x}/{self.total_frames}", cr=True)))
 
 class Job:
-  def __init__(self, projectid, scene, encoder, path, encoded_filename, priority, encoder_params, start, frames):
+  def __init__(self, projectid, scene, encoder, path, encoded_filename, priority, encoder_params, ffmpeg_params, start, frames):
     self.projectid = projectid
     self.scene = scene
     self.encoder = encoder
@@ -338,6 +334,7 @@ class Job:
     self.path = path
     self.encoded_filename = encoded_filename
     self.encoder_params = encoder_params
+    self.ffmpeg_params = ffmpeg_params
     self.workers = []
     self.priority = priority
     self.start = start

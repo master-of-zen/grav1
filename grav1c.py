@@ -53,14 +53,36 @@ def tmp_file(mode, stream, suffix, cb):
 
 def aom_vpx_encode(worker, encoder, video, job, status_cb):
   encoder_params = job.encoder_params
+  ffmpeg_params = job.ffmpeg_params
   if encoder == "aomenc" and "vmaf" in encoder_params and len(worker.client.args.vmaf_path) > 0:
     encoder_params += f" --vmaf-model-path={worker.client.args.vmaf_path}"
 
+  vfs = [f"select=gte(n\\,{job.start})"]
+
+  vf_match = re.search(r"(?:-vf\s\"([^\"]+?)\"|-vf\s([^\s]+?)\s)", ffmpeg_params)
+
+  if vf_match:
+    vfs.append(vf_match.group(1) or vf_match.group(2))
+    ffmpeg_params = re.sub(r"(?:-vf\s\"([^\"]+?)\"|-vf\s([^\s]+?)\s)", "", ffmpeg_params).strip()
+
+  vf = ",".join(vfs)
+
   output_filename = f"{video}.ivf"
 
-  ffmpeg = f"ffmpeg -y -hide_banner -loglevel error".split(" ")
-  ffmpeg.extend(["-i",  video])
-  ffmpeg.extend(f"-strict -1 -pix_fmt yuv420p -vf select=gte(n\\,{job.start}) -vframes {job.frames} -f yuv4mpegpipe -".split(" "))
+  ffmpeg = [
+    "ffmpeg", "-y", "-hide_banner",
+    "-loglevel", "error",
+    "-i", video,
+    "-strict", "-1",
+    "-pix_fmt", "yuv420p",
+    "-vf", vf,
+    "-vframes", job.frames
+  ]
+
+  if ffmpeg_params:
+    ffmpeg.extend(ffmpeg_params.split(" "))
+
+  ffmpeg.extend(["-f", "yuv4mpegpipe", "-"])
 
   aom = [encoder, "-", "--ivf", f"--fpf={video}.log", f"--threads={args.threads}", "--passes=2"]
 
@@ -103,8 +125,8 @@ def aom_vpx_encode(worker, encoder, video, job, status_cb):
     if worker.pipe.returncode != 0:
       success = False
 
-  if os.path.isfile(f"{input}.log"):
-    os.remove(f"{input}.log")
+  if os.path.isfile(f"{video}.log"):
+    os.remove(f"{video}.log")
 
   if success:
     return output_filename
@@ -115,7 +137,7 @@ def cancel_job(job):
   client.session.post(
     f"{client.args.target}/cancel_job",
     data={
-      "id": job.id,
+      "client": job.id,
       "scene": job.scene,
       "projectid": job.projectid
     }
@@ -134,18 +156,28 @@ def fetch_new_job(client):
     job.scene = r.headers["scene"]
     job.encoder = r.headers["encoder"]
     job.encoder_params = r.headers["encoder_params"]
+    job.ffmpeg_params = r.headers["ffmpeg_params"]
     job.projectid = r.headers["projectid"]
     job.frames = r.headers["frames"]
     job.start = r.headers["start"]
     job.request = r
 
-    if r.headers["version"] != version:
+    if r.headers["version"] != encoder_versions[job.encoder]:
       cancel_job(job)
-      if os.path.isfile("aomenc.exe"):
-        os.remove("aomenc.exe")
-        client.stop(f"bad aom version. have: {version} required: {r.headers['version']}\n\nRestart to re-download.")
-      else:
-        client.stop(f"bad aom version. have: {version} required: {r.headers['version']}")
+
+      if job.encoder == "aom":
+        if os.path.isfile("aomenc.exe"):
+          os.remove("aomenc.exe")
+          client.stop(f"bad aom version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}\n\nRestart to re-download.")
+        else:
+          client.stop(f"bad aom version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}")
+
+      if job.encoder == "vpx":
+        if os.path.isfile("vpxenc.exe"):
+          os.remove("vpxenc.exe")
+          client.stop(f"bad vpx version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}\n\nRestart to re-download.")
+        else:
+          client.stop(f"bad vpx version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}")
 
     client.jobs.append(job)
 
@@ -159,11 +191,13 @@ def upload(client, job, file, output):
     r = client.session.post(
       f"{client.args.target}/finish_job",
       data={
-        "id": job.id,
+        "client": job.id,
         "scene": job.scene,
         "projectid": job.projectid,
         "encoder": job.encoder,
-        "encoder_params": job.encoder_params
+        "version": encoder_versions[job.encoder],
+        "encoder_params": job.encoder_params,
+        "ffmpeg_params": job.ffmpeg_params
       },
       files=files)
     return r
@@ -421,10 +455,20 @@ windows_binaries = [
 
 def get_aomenc_version():
   if not shutil.which("aomenc"):
-    print("aomenc not found, exiting")
+    print("aomenc not found, exiting in 3s")
+    time.sleep(3)
     exit()
   p = subprocess.run(["aomenc", "--help"], stdout=subprocess.PIPE)
   r = re.search(r"av1\s+-\s+(.+)\n", p.stdout.decode("utf-8"))
+  return r.group(1).replace("(default)", "").strip()
+
+def get_vpxenc_version():
+  if not shutil.which("vpxenc"):
+    print("vpxenc not found, exiting in 3s")
+    time.sleep(3)
+    exit()
+  p = subprocess.run(["vpxenc", "--help"], stdout=subprocess.PIPE)
+  r = re.search(r"vp9\s+-\s+(.+)\n", p.stdout.decode("utf-8"))
   return r.group(1).replace("(default)", "").strip()
 
 if __name__ == "__main__":
@@ -444,7 +488,6 @@ if __name__ == "__main__":
       with requests.get("https://ci.appveyor.com/api/projects/marcomsousa/build-aom") as r:
         latest_job = r.json()["build"]["jobs"][0]["jobId"]
         windows_binaries.append(("aomenc.exe", f"https://ci.appveyor.com/api/buildjobs/{latest_job}/artifacts/aomenc.exe", "binary"))
-    
     for file in windows_binaries:
       if not os.path.isfile(file[0]):
         print(file[0], "is missing, downloading...")
@@ -466,7 +509,7 @@ if __name__ == "__main__":
             with open(file[0], "wb+") as f:
               f.write(file_in_zip.read())
 
-  version = get_aomenc_version()
+  encoder_versions = {"aom": get_aomenc_version(), "vpx": get_vpxenc_version()}
 
   client = Client(args)
 
@@ -481,3 +524,4 @@ if __name__ == "__main__":
     curses.wrapper(lambda scr: client.window(scr))
     if client.exit_message:
       print(client.exit_message)
+      time.sleep(3)

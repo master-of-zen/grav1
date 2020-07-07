@@ -93,7 +93,7 @@ def test_candidate_kf(dict_list, current_frame_index, frame_count_so_far):
       is_keyframe = 1
   return is_keyframe
 
-def get_aom_keyframes(src):
+def get_aom_keyframes(src, cb):
   ffmpeg = ["ffmpeg", "-y",
     "-hide_banner",
     "-loglevel", "error",
@@ -101,21 +101,35 @@ def get_aom_keyframes(src):
     "-map", "0:v:0",
     "-strict", "-1",
     "-pix_fmt", "yuv420p",
+    "-vsync", "0",
     "-f", "yuv4mpegpipe", "-"]
 
   aom = ["aomenc", "-",
     "--ivf", f"--fpf=fpf.log",
     f"--threads=8", "--passes=2",
     "--pass=1", "--auto-alt-ref=1",
-    "--lag-in-frames=35",
+    "--lag-in-frames=25",
     "-o", os.devnull]
-
+  
   ffmpeg_pipe = subprocess.Popen(ffmpeg,
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT)
 
-  pipe = subprocess.run(aom,
-    stdin=ffmpeg_pipe.stdout)
+  pipe = subprocess.Popen(aom,
+    stdin=ffmpeg_pipe.stdout,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    universal_newlines=True)
+
+  while True:
+    line = pipe.stdout.readline().strip()
+
+    if len(line) == 0 and pipe.poll() is not None:
+      break
+
+    match = re.search(r"frame.*?\/([^ ]+?) ", line)
+    if match:
+      cb(int(match.group(1)))
 
   filename = "fpf.log"
 

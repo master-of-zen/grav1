@@ -56,8 +56,8 @@ class Projects:
       project = self.projects[pid]
       all_jobs.extend(project.jobs.values())
 
-    all_jobs = [job for job in all_jobs if not any(job.scene == job2["scene"] and str(job.projectid) == str(job2["projectid"]) for job2 in skip_jobs)]
-    all_jobs = sorted(all_jobs, key=lambda x: (x.priority, len(x.workers), x.frames))
+    all_jobs = [job for job in all_jobs if not any(job.scene == job2["scene"] and str(job.project.projectid) == str(job2["projectid"]) for job2 in skip_jobs)]
+    all_jobs = sorted(all_jobs, key=lambda job: (job.project.priority, len(job.workers), job.frames))
 
     return all_jobs[0] if len(all_jobs) > 0 else None
 
@@ -259,12 +259,11 @@ class Project:
         scene_setting_ffmpeg = self.ffmpeg_params
 
         self.jobs[scene] = Job(
-          self.projectid,
+          self,
           scene,
           self.encoder,
           os.path.join(self.path_split, self.scenes[scene]["segment"]),
           encoded_filename,
-          self.priority,
           scene_setting,
           scene_setting_ffmpeg,
           self.scenes[scene]["start"],
@@ -328,8 +327,8 @@ class Project:
       ffmpeg(cmd, lambda x: (self.set_status(f"concat {x}/{self.total_frames}"), self.logger.default(self.projectid, f"concat {x}/{self.total_frames}", cr=True)))
 
 class Job:
-  def __init__(self, projectid, scene, encoder, path, encoded_filename, priority, encoder_params, ffmpeg_params, start, frames):
-    self.projectid = projectid
+  def __init__(self, project, scene, encoder, path, encoded_filename, encoder_params, ffmpeg_params, start, frames):
+    self.project = project
     self.scene = scene
     self.encoder = encoder
     self.filename = os.path.basename(path)
@@ -338,6 +337,5 @@ class Job:
     self.encoder_params = encoder_params
     self.ffmpeg_params = ffmpeg_params
     self.workers = []
-    self.priority = priority
     self.start = start
     self.frames = frames

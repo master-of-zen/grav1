@@ -65,11 +65,11 @@ def get_job(jobs):
     workerid = f"{request.environ['REMOTE_ADDR']}:{request.environ['REMOTE_PORT']}"
     new_job.workers.append(workerid)
 
-    logger.add("net", "sent", new_job.projectid, new_job.scene, "to", workerid, new_job.frames)
+    logger.add("net", "sent", new_job.project.projectid, new_job.scene, "to", workerid, new_job.frames)
 
     resp = make_response(send_file(new_job.path))
     resp.headers["success"] = "1"
-    resp.headers["projectid"] = new_job.projectid
+    resp.headers["projectid"] = new_job.project.projectid
     resp.headers["filename"] = new_job.filename
     resp.headers["scene"] = new_job.scene
     resp.headers["id"] = workerid
@@ -166,7 +166,7 @@ def add_project():
       logger.add("default", "add project failed", input_file, "not found")
       continue
 
-    self.projects.add(Project(
+    projects.add(Project(
       input_file,
       path_out,
       path_split,
@@ -177,7 +177,7 @@ def add_project():
       min_frames=content["min_frames"] if "min_frames" in content else -1,
       max_frames=content["max_frames"] if "max_frames" in content else -1,
       priority=content["priority"] if "priority" in content else 0
-    ), content["on_complete"])
+    ), content["on_complete"] if "on_complete" in content else "")
 
   return json.dumps({"success": True})
 

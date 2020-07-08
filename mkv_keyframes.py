@@ -15,11 +15,13 @@ def get_child(parent, *args, is_list=False):
 def get_mkv_keyframes(src):
   frames, total_frames = get_mkv_keyframes_fast(src)
   if not frames:
-    print(total_frames, "falling back to ffmpeg")
+    print("falling back to ffmpeg for keyframes")
     return get_mkv_keyframes_slow(src)
   else:
     if not total_frames:
+      print("falling back to ffmpeg for total frames")
       total_frames = get_frames(src)
+
     return frames, total_frames
 
 def get_mkv_keyframes_fast(src):
@@ -63,19 +65,20 @@ def get_mkv_keyframes_fast(src):
     if e[1][0].data == track_number:
       timestamps.append(e[0].data)
 
-  for tag in [tag for tag in get_child(mkv[1], "Tags") if tag.name == "Tag"]:
-    targets = get_child(tag, "Targets")
-    if len(targets.data) == 0: continue
-    track = get_child(targets, "TagTrackUID")
-    if not track: continue
-    if track.data == track_uid:
-      for simple_tag in get_child(tag, "SimpleTag", is_list=True):
-        if get_child(simple_tag, "TagName").data == "DURATION":
-          total_frames = round(timecode_scale / frame_duration * (parse_time(get_child(simple_tag, "TagString").data) * 1000 - timestamps[0]))
-        if get_child(simple_tag, "TagName").data == "NUMBER_OF_FRAMES":
-          total_frames = get_child(simple_tag, "TagString").data
-          break
-      if total_frames: break
+  if get_child(mkv[1], "Tags"):
+    for tag in [tag for tag in get_child(mkv[1], "Tags") if tag.name == "Tag"]:
+      targets = get_child(tag, "Targets")
+      if len(targets.data) == 0: continue
+      track = get_child(targets, "TagTrackUID")
+      if not track: continue
+      if track.data == track_uid:
+        for simple_tag in get_child(tag, "SimpleTag", is_list=True):
+          if get_child(simple_tag, "TagName").data == "DURATION":
+            total_frames = round(timecode_scale / frame_duration * (parse_time(get_child(simple_tag, "TagString").data) * 1000 - timestamps[0]))
+          if get_child(simple_tag, "TagName").data == "NUMBER_OF_FRAMES":
+            total_frames = get_child(simple_tag, "TagString").data
+            break
+        if total_frames: break
 
   timestamps = [t - timestamps[0] for t in timestamps]
   frames = [round(timecode_scale / frame_duration * t) for t in timestamps]
@@ -89,6 +92,7 @@ def get_mkv_keyframes_slow(src):
     "-map", "0:v:0",
     "-vf", "select=eq(pict_type\,PICT_TYPE_I)",
     "-f", "null",
+    "-vsync", "0",
     "-loglevel", "debug", "-"
   ]
 

@@ -38,9 +38,11 @@ def split(video, path_split, min_frames=-1, max_frames=-1, cb=None):
     accumulate = 0
     for i, scene in enumerate(aom_scenes[skip_keyframes:]):
       scene = (scene[0] - accumulate, scene[1] + accumulate)
-      if scene[1] > min_frames or not len(final_scenes):
+      if scene[1] > min_frames:
         final_scenes.append(scene)
         accumulate = 0
+      elif not len(final_scenes):
+        accumulate = scene[1]
       else:
         prev_scene = final_scenes[-1]
         if i < len(aom_scenes[skip_keyframes:]) - 1:

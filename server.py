@@ -159,12 +159,32 @@ def modify_project(projectid):
 def add_project():
   content = request.json
 
-  logger.add("net", "add project", content["input"])
+  missing_fields = ",".join([key for key in ["input", "encoder", "encoder_params"] if key not in content])
+  if missing_fields:
+    return json.dumps({"success": False, "reason": f"Missing fields {missing_fields}"})
 
+  if not (isinstance(content["min_frames"], int) and \
+    isinstance(content["max_frames"], int)):
+    return json.dumps({
+      "success": False,
+      "reason": "min_frames and max_frames must be of type integer"
+    })
+
+  if not isinstance(content["priority"], (int, float)):
+    return json.dumps({
+      "success": False,
+      "reason": "priority must be a number"
+    })
+  
+  if not content["input"]:
+    return json.dumps({"success": False, "reason": "input is empty"})
+
+  missing_files = ",".join([f for f in content["input"] if not os.path.isfile(f)])
+  if missing_files:
+    return json.dumps({"success": False, "reason": f"Input files not found: {missing_files}"})
+  
   for input_file in content["input"]:
-    if not os.path.isfile(input_file):
-      logger.add("default", "add project failed", input_file, "not found")
-      continue
+    logger.add("net", "add project", input_file)
 
     projects.add(Project(
       input_file,

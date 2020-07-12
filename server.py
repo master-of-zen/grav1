@@ -149,8 +149,17 @@ def modify_project(projectid):
   project = projects[projectid]
 
   changes = request.json
+
   if "priority" in changes:
-    project.priority = int(changes["priority"])
+    if not isinstance(changes["priority"], (int, float)):
+      return json.dumps({
+        "success": False,
+        "reason": "priority must be a number"
+      })
+    project.priority = changes["priority"]
+
+  if "on_complete" in changes:
+    project.action = changes["on_complete"]
 
   return json.dumps({"success": True})
 
@@ -221,11 +230,11 @@ def get_info():
   return json.dumps(info)
 
 def get_dav1d_version():
-  p = subprocess.run("dav1d -v", stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  p = subprocess.run(["dav1d", "-v"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
   return p.stdout.decode("utf-8").strip() + p.stderr.decode("utf-8").strip()
 
 def get_aomenc_version():
-  p = subprocess.run("aomenc --help", stdout=subprocess.PIPE)
+  p = subprocess.run(["aomenc", "--help"], stdout=subprocess.PIPE)
   r = re.search(r"av1\s+-\s+(.+)\n", p.stdout.decode("utf-8"))
   return r.group(1).replace("(default)", "").strip()
 

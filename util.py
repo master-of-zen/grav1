@@ -1,15 +1,21 @@
 import subprocess, re, contextlib, os
 from tempfile import NamedTemporaryFile
 
+vs_core = None
+
+try:
+  import vapoursynth
+  vs_core = vapoursynth.get_core()
+except: pass
+
 re_duration = re.compile(r"Duration: (\d{2}):(\d{2}):(\d{2}).(\d{2})", re.U)
 re_position = re.compile(r".*time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})", re.U)
 
-def parse_time(search):
-  search = re.match(r"[\x20-\x7E]+", search).group()
-  return sum([float(t) * 60 ** i for i, t in enumerate(search.split(":")[::-1])])
+def get_frames(src, fast=True):
+  if vs_core:
+    return vs_core.ffms2.Source(src).num_frames
 
-def get_frames(input, fast=True):
-  cmd = ["ffmpeg", "-hide_banner", "-i", input, "-map", "0:v:0"]
+  cmd = ["ffmpeg", "-hide_banner", "-i", src, "-map", "0:v:0"]
   if fast:
     cmd.extend(["-c", "copy",])
   cmd.extend(["-f", "null", "-"])
@@ -78,3 +84,7 @@ def ffmpeg_pipe(cmd1, cmd2, cb):
     pipe2.kill()
     pipe1.kill()
     raise e
+
+def parse_time(search):
+  search = re.match(r"[\x20-\x7E]+", search).group()
+  return sum([float(t) * 60 ** i for i, t in enumerate(search.split(":")[::-1])])

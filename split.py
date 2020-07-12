@@ -1,5 +1,5 @@
 import os, shutil
-from util import get_frames, ffmpeg, ffmpeg_pipe
+from util import get_frames, ffmpeg, ffmpeg_pipe, vs_core
 from mkv_keyframes import get_mkv_keyframes
 from aom_keyframes import get_aom_keyframes
 
@@ -56,6 +56,7 @@ def split(video, path_split, min_frames=-1, max_frames=-1, cb=None):
               final_scenes[-1] = (prev_scene[0], prev_scene[1] + scene[1])
         else:
           final_scenes[-1] = (prev_scene[0], prev_scene[1] + scene[1])
+            
     aom_keyframes = [s[0] for s in (aom_scenes[:skip_keyframes] + final_scenes)]
 
   if total_frames not in aom_keyframes:
@@ -65,7 +66,7 @@ def split(video, path_split, min_frames=-1, max_frames=-1, cb=None):
     aom_kf = apply_max_dist(aom_keyframes, min_frames, max_frames, mkv_keyframes)
   else:
     aom_kf = aom_keyframes
-  
+
   frames, splits, segments = partition_with_mkv(aom_kf, mkv_keyframes, total_frames)
   reencode = False
   if len(frames) < len(aom_keyframes) / 2:
@@ -264,13 +265,16 @@ def verify_split(path_in, path_split, segments, cb=None):
       cb(f"misalignment at {segment} expected: {segments[segment]['start']}, got: {total_frames}")
     elif num_frames != segments[segment]["length"]:
       cb(f"bad framecount {segment} expected: {segments[segment]['length']}, got: {num_frames}")
-    else:
+    elif not vs_core:
       num_frames_slow = get_frames(path_segment, False)
       if num_frames != num_frames_slow:
         cb(f"bad framecount {segment} expected: {num_frames}, got: {num_frames_slow}")
       else:
         total_frames += num_frames
         continue
+    else:
+      total_frames += num_frames
+      continue
 
     os.makedirs(os.path.join(path_split, "old"), exist_ok=True)
     os.rename(path_segment, os.path.join(path_split, "old", segment))

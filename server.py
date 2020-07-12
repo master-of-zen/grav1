@@ -249,6 +249,11 @@ if __name__ == "__main__":
 
   logger = Logger()
 
+  from util import vs_core
+
+  if vs_core:
+    logger.add("info", "Vapoursynth supported")
+
   projects = Projects(logger)
   projects.load_projects(path_out, path_split, path_encode)
 

@@ -1,5 +1,5 @@
 import subprocess, re, enzyme
-from util import parse_time, get_frames
+from util import parse_time, get_frames, vs_core
 
 def get_child(parent, *args, is_list=False):
   args = list(args)
@@ -13,16 +13,30 @@ def get_child(parent, *args, is_list=False):
 
 # returns list of keyframes, total_frames
 def get_mkv_keyframes(src):
-  frames, total_frames = get_mkv_keyframes_fast(src)
+  try:
+    frames, total_frames = get_mkv_keyframes_fast(src)
+  except:
+    frames = None
+    total_frames = None
+
   if not frames:
-    print("falling back to ffmpeg for keyframes")
-    return get_mkv_keyframes_slow(src)
+    if vs_core:
+      print("attempting to use vapoursynth/ffms2 for keyframes")
+      return get_keyframes_vapoursynth(vs_core, src)
+    else:
+      print("falling back to ffmpeg for keyframes")
+      return get_mkv_keyframes_slow(src)
   else:
     if not total_frames:
       print("falling back to ffmpeg for total frames")
       total_frames = get_frames(src)
 
     return frames, total_frames
+
+def get_keyframes_vapoursynth(core, src):
+  video = core.ffms2.Source(src)
+  frames = [i for i in range(video.num_frames) if video.get_frame(i).props._PictType.decode() == "I"]
+  return frames, video.num_frames
 
 def get_mkv_keyframes_fast(src):
   mkv = enzyme.parsers.ebml.parse(
@@ -73,8 +87,6 @@ def get_mkv_keyframes_fast(src):
       if not track: continue
       if track.data == track_uid:
         for simple_tag in get_child(tag, "SimpleTag", is_list=True):
-          if get_child(simple_tag, "TagName").data == "DURATION":
-            total_frames = round(timecode_scale / frame_duration * (parse_time(get_child(simple_tag, "TagString").data) * 1000 - timestamps[0]))
           if get_child(simple_tag, "TagName").data == "NUMBER_OF_FRAMES":
             total_frames = get_child(simple_tag, "TagString").data
             break

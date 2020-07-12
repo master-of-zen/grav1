@@ -1,47 +1,50 @@
 # grav1
-## distributed network av1 / vp9 encoder
+## Distributed network av1 / vp9 encoder
 
 [web client](https://encode.grass.moe)
 
 message me on the av1 discord if you're actually going to use this
 
-### preview
+### Preview
 
 ![client](https://github.com/wwww-wwww/grav1/raw/master/images/client.gif)
 
 <img src="https://github.com/wwww-wwww/grav1/raw/master/images/website.png" width="600">
 
-### latest significant changes:
+### Latest significant changes:
 - split algorithm is updated [here](https://github.com/wwww-wwww/grav1ty) first
 - scene information is stored individually for each project
 
-### requirements
-server:
+### Requirements
+Server (system):
 ```
-flask
-flask-cors
-wsgiserver
-```
-server (system):
-```
+python3
 ffmpeg
 aomenc
 vpxenc
 dav1d
 ```
-client:  
+Server (python):
 ```
-requests
+flask
+flask-cors
+wsgiserver
+vapoursynth (optional)
 ```
-client (system):
+Client (system):
 ```
+python3
 curses
 ffmpeg
 aomenc (vmaf optional)
 vpxenc
 ```
+Client (python):  
+```
+requests
+```
 
-### usage
+### Usage
 
 this only supports aomenc and vpxenc  
 (I don't plan on supporting other encoders)
@@ -55,7 +58,7 @@ starting up a worker
 
 access the server through the [web client](https://encode.grass.moe) (incomplete)
 
-## web ui api
+## Web ui api
 If you want your program to support my web client, here are the specifications:
 
 ## Get Server Info ##
@@ -110,7 +113,6 @@ JSON list of objects
     "input": "some filename",
     "frames": 50,
     "total_frames": 100,
-    "fps": 5,
     "jobs": 1,
     "total_jobs": 2,
     "status": "ready",
@@ -291,7 +293,6 @@ Key                               | Type    | Description
 `input`                           | string  | Input filename / path
 `frames`                          | integer | Number of currently encoded frames
 `total_frames`                    | integer | Total number of frames to be encoded
-`fps`                             | float   | Current fps
 `jobs`                            | integer | Number of completed jobs / segments
 `total_jobs`                      | integer | Total number of jobs / segments
 `status`                          | string  | Current status of the project

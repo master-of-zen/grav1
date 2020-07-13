@@ -1,8 +1,9 @@
 import os, json, time, subprocess, re
 from threading import Thread, Event
 
-from split import split, verify_split
-from util import tmp_file, ffmpeg, get_frames
+from grav1ty.split import split, verify_split
+from grav1ty.util import ffmpeg, get_frames
+from util import tmp_file
 
 from actions import actions
 

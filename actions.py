@@ -1,5 +1,5 @@
 import os, subprocess, re, shutil
-from util import ffmpeg
+from grav1ty.util import ffmpeg
 
 merge_out = "merged"
 

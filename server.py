@@ -265,7 +265,7 @@ if __name__ == "__main__":
   if password:
     logger.add("info", "Starting with protected add, modify, and delete")
 
-  from util import vs_core
+  from grav1ty.util import vs_core
 
   if vs_core:
     logger.add("info", "Vapoursynth supported")

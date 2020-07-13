@@ -230,8 +230,7 @@ def get_info():
     "frames per hour": {
       "since": projects.telemetry["fph_time"],
       "frames": projects.telemetry["fph"]
-    },
-    "userstats": projects.userstats
+    }
   }
   return json.dumps(info)
 

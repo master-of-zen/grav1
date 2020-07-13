@@ -12,10 +12,6 @@ from flask import Flask, request, send_file, make_response, send_from_directory
 from flask_cors import cross_origin
 from wsgiserver import WSGIServer
 
-path_split = "jobs/{}/split"
-path_encode = "jobs/{}/encode"
-path_out = "jobs/{}/completed.webm"
-
 app = Flask(__name__)
 
 @app.route("/scene/<projectid>/<scene>", methods=["GET"])
@@ -197,9 +193,7 @@ def add_project():
 
     projects.add(Project(
       input_file,
-      path_out,
-      path_split,
-      path_encode, 
+      projects.path_jobs, 
       content["encoder"],
       content["encoder_params"],
       ffmpeg_params=content["ffmpeg_params"] if "ffmpeg_params" in content else "",
@@ -247,14 +241,9 @@ if __name__ == "__main__":
   import argparse
 
   parser = argparse.ArgumentParser()
-  parser.add_argument("--port", dest="port", default=7899)
+  parser.add_argument("--port", default=7899)
+  parser.add_argument("--cwd", default=os.getcwd())
   args = parser.parse_args()
-
-  versions = {
-    "aom": get_aomenc_version(),
-    "vpx": get_vpxenc_version(),
-    "dav1d": get_dav1d_version()
-  }
 
   logger = Logger()
 
@@ -263,8 +252,22 @@ if __name__ == "__main__":
   if vs_core:
     logger.add("info", "Vapoursynth supported")
 
-  projects = Projects(logger)
-  projects.load_projects(path_out, path_split, path_encode)
+  path_split = os.path.join(args.cwd, "jobs/{}/split")
+  path_encode = os.path.join(args.cwd, "jobs/{}/encode")
+  path_out = os.path.join(args.cwd, "jobs/{}/completed.webm")
+
+  logger.add("info", "Working directory:", args.cwd)
+
+  versions = {
+    "aom": get_aomenc_version(),
+    "vpx": get_vpxenc_version(),
+    "dav1d": get_dav1d_version()
+  }
+
+  projects = Projects(logger, args.cwd)
+
+
+  projects.load_projects()
 
   logger.add("default", "listening on port", args.port)
   WSGIServer(app, port=args.port).start()

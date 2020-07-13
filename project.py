@@ -7,9 +7,14 @@ from util import tmp_file, ffmpeg, get_frames
 from actions import actions
 
 class Projects:
-  def __init__(self, logger):
+  def __init__(self, logger, working_dir):
     self.logger = logger
     self.projects = {}
+    self.working_dir = working_dir
+    self.path_projects = os.path.join(working_dir, "projects.json")
+    self.path_scenes = os.path.join(working_dir, "scenes")
+    self.path_jobs = os.path.join(working_dir, "jobs")
+
     self.action_queue = []
     self.action_lock = Event()
     self.telemetry = {"encodes": [], "fph": 0, "fph_time": 0}
@@ -159,9 +164,9 @@ class Projects:
     self.save_projects()
 
   def save_projects(self):
+    os.makedirs(os.path.join(self.working_dir, "scenes"), exist_ok=True)
+    
     dict_projects = {}
-    os.makedirs("scenes", exist_ok=True)
-
     for project in self.projects.values():
       dict_projects[project.projectid] = {
         "priority": project.priority,
@@ -174,11 +179,11 @@ class Projects:
         "input_frames": project.input_total_frames,
         "on_complete": project.action
       }
-      json.dump(project.scenes, open(f"scenes/{project.projectid}.json", "w+"), indent=2)
+      json.dump(project.scenes, open(os.path.join(self.path_scenes, f"{project.projectid}.json"), "w+"), indent=2)
     
-    json.dump(dict_projects, open("projects.json", "w+"), indent=2)
+    json.dump(dict_projects, open(self.path_projects, "w+"), indent=2)
 
-  def load_projects(self, path_out, path_split, path_encode):
+  def load_projects(self):
     if not os.path.isfile("projects.json"): return
     projects = json.load(open("projects.json", "r"))
     for pid in projects:
@@ -186,25 +191,25 @@ class Projects:
 
       self.add(Project(
         project["path_in"],
-        path_out, path_split, path_encode, 
+        self.path_jobs, 
         project["encoder"],
         project["encoder_params"],
         project["ffmpeg_params"] if "ffmpeg_params" in project else "",
         project["min_frames"] if "min_frames" in project else -1,
         project["max_frames"] if "max_frames" in project else -1,
-        json.load(open(f"scenes/{pid}.json")) if os.path.isfile(f"scenes/{pid}.json") else {},
+        json.load(open(os.path.join(self.path_scenes, f"{pid}.json"), "r")) if os.path.isfile(os.path.join(self.path_scenes, f"{pid}.json")) else {},
         project["input_frames"] if "input_frames" in project else 0,
         project["priority"] if "priority" in project else 0,
         pid
       ), project["on_complete"] if "on_complete" in project else "")
 
 class Project:
-  def __init__(self, filename, path_out, path_split, path_encode, encoder, encoder_params, ffmpeg_params="", min_frames=-1, max_frames=-1, scenes={}, total_frames=0, priority=0, id=0):
+  def __init__(self, filename, path, encoder, encoder_params, ffmpeg_params="", min_frames=-1, max_frames=-1, scenes={}, total_frames=0, priority=0, id=0):
     self.projectid = id or str(time.time())
     self.path_in = filename
-    self.path_out = path_out.format(self.projectid)
-    self.path_split = path_split.format(self.projectid)
-    self.path_encode = path_encode.format(self.projectid)
+    self.path_out = os.path.join(path, self.projectid, "completed.webm")
+    self.path_split = os.path.join(path, self.projectid, "split")
+    self.path_encode = os.path.join(path, self.projectid, "encode")
     self.status = "starting"
     self.jobs = {}
     self.min_frames = min_frames
@@ -281,6 +286,8 @@ class Project:
       self.complete()
 
   def split(self):
+    if self.stopped: return
+    
     self.set_status("splitting")
     self.logger.default(self.projectid, "splitting")
     self.scenes, self.input_total_frames, segments = split(
@@ -290,6 +297,7 @@ class Project:
       self.max_frames,
       cb=lambda message, cr=False: self.logger.default(self.projectid, message, cr=cr)
     )
+
     self.set_status("verifying split")
     verify_split(
       self.path_in,

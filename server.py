@@ -128,6 +128,11 @@ def list_directory():
 @app.route("/api/delete_project/<projectid>", methods=["POST"])
 @cross_origin()
 def delete_project(projectid):
+  content = request.json
+  if password and ("password" not in content or content["password"] != password):
+    logger.add("net", "Bad password.")
+    return json.dumps({"success": False, "reason": "Bad password."})
+
   if projectid not in projects:
     return json.dumps({"success": False, "reason": "Project does not exist."})
 
@@ -139,12 +144,16 @@ def delete_project(projectid):
 @app.route("/api/modify/<projectid>", methods=["POST"])
 @cross_origin()
 def modify_project(projectid):
+  changes = request.json
+  if password and ("password" not in changes or changes["password"] != password):
+    logger.add("net", "Bad password.")
+    return json.dumps({"success": False, "reason": "Bad password."})
+
   if projectid not in projects:
     return json.dumps({"success": False, "reason": "Project does not exist."})
 
   project = projects[projectid]
 
-  changes = request.json
 
   if "priority" in changes:
     if not isinstance(changes["priority"], (int, float)):
@@ -163,6 +172,9 @@ def modify_project(projectid):
 @cross_origin()
 def add_project():
   content = request.json
+  if password and ("password" not in content or content["password"] != password):
+    logger.add("net", "Bad password.")
+    return json.dumps({"success": False, "reason": "Bad password."})
 
   missing_fields = ",".join([key for key in ["input", "encoder", "encoder_params"] if key not in content])
   if missing_fields:
@@ -243,9 +255,15 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument("--port", default=7899)
   parser.add_argument("--cwd", default=os.getcwd())
+  parser.add_argument("--password", default=None)
   args = parser.parse_args()
 
+  password = args.password
+
   logger = Logger()
+
+  if password:
+    logger.add("info", "Starting with protected add, modify, and delete")
 
   from util import vs_core
 

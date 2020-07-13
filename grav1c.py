@@ -30,20 +30,22 @@ def print_progress(n, total):
   return "{:3.0f}%|{:{}s}| {}/{}".format(100 * n / total, fill, 10, n, total)
 
 @contextlib.contextmanager
-def tmp_file(mode, stream, suffix, cb):
+def tmp_file(mode, stream, suffix, worker):
   try:
     file = NamedTemporaryFile(mode=mode, suffix=suffix, dir=".", delete=False)
     tmp_name = file.name
     downloaded = 0
     total_size = int(stream.headers["content-length"])
     for chunk in stream.iter_content(chunk_size=2**14):
+      if worker.stopped: break
       if chunk:
         downloaded = downloaded + len(chunk)
-        cb(f"downloading {print_progress_bytes(downloaded, total_size)}")
+        worker.update_status(f"downloading {print_progress_bytes(downloaded, total_size)}")
         file.write(chunk)
     file.flush()
     file.close()
     yield tmp_name
+  except: pass
   finally:
     while os.path.exists(tmp_name):
       try:
@@ -51,7 +53,7 @@ def tmp_file(mode, stream, suffix, cb):
       except:
         pass
 
-def aom_vpx_encode(worker, encoder, video, job, status_cb):
+def aom_vpx_encode(encoder, worker, video, job):
   encoder_params = job.encoder_params
   ffmpeg_params = job.ffmpeg_params
   if encoder == "aomenc" and "vmaf" in encoder_params and len(worker.client.args.vmaf_path) > 0:
@@ -106,7 +108,7 @@ def aom_vpx_encode(worker, encoder, video, job, status_cb):
       universal_newlines=True)
 
     worker.progress = (pass_n, 0)
-    status_cb(f"{encoder:.3s} pass: {pass_n} {print_progress(0, total_frames)}")
+    worker.update_status(f"{encoder:.3s} pass: {pass_n} {print_progress(0, total_frames)}")
 
     while True:
       line = worker.pipe.stdout.readline().strip()
@@ -117,7 +119,7 @@ def aom_vpx_encode(worker, encoder, video, job, status_cb):
       match = re.search(r"frame.*?\/([^ ]+?) ", line)
       if match:
         worker.progress = (pass_n, int(match.group(1)))
-        status_cb(f"{encoder:.3s} pass: {pass_n} {print_progress(int(match.group(1)), total_frames)}")
+        worker.update_status(f"{encoder:.3s} pass: {pass_n} {print_progress(int(match.group(1)), total_frames)}")
 
     if ffmpeg_pipe.poll() is None:
       ffmpeg_pipe.kill()
@@ -132,6 +134,11 @@ def aom_vpx_encode(worker, encoder, video, job, status_cb):
     return output_filename
   else:
     return False
+
+encode = {
+  "aom": lambda worker, video, job: aom_vpx_encode("aomenc", worker, video, job),
+  "vpx": lambda worker, video, job: aom_vpx_encode("vpxenc", worker, video, job)
+}
 
 def cancel_job(job):
   client.session.post(
@@ -167,6 +174,8 @@ def fetch_new_job(client):
 
       if job.encoder == "aom":
         if os.path.isfile("aomenc.exe"):
+          client.config["r"] = len(client.workers)
+          save_config(client.config)
           os.remove("aomenc.exe")
           client.stop(f"bad aom version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}\n\nRestart to re-download.")
         else:
@@ -174,11 +183,14 @@ def fetch_new_job(client):
 
       if job.encoder == "vpx":
         if os.path.isfile("vpxenc.exe"):
+          client.config["r"] = len(client.workers)
+          save_config(client.config)
           os.remove("vpxenc.exe")
           client.stop(f"bad vpx version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}\n\nRestart to re-download.")
         else:
           client.stop(f"bad vpx version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}")
 
+      return None
     client.jobs.append(job)
 
     return job
@@ -205,7 +217,8 @@ def upload(client, job, file, output):
     return False
 
 class Client:
-  def __init__(self, args):
+  def __init__(self, config, args):
+    self.config = config
     self.args = args
     self.workers = []
     self.numworkers = int(args.workers)
@@ -228,14 +241,20 @@ class Client:
 
     self.worker_timer = Event()
 
+    self.stopping = False
     self.exit_event = Event()
     self.exit_message = None
 
   def stop(self, message=""):
+    self.stopping = True
+    for worker in self.workers:
+      worker.kill()
+    
     self.exit_event.set()
     self.exit_message = message
 
   def add_worker(self, worker):
+    if self.stopping: return
     self.workers.append(worker)
     worker.start()
 
@@ -310,18 +329,16 @@ class Client:
           if len(self.workers) == self.numworkers or any(worker for worker in self.workers if worker.job is None):
             self.numworkers = max(self.numworkers - 1, 0)
 
-          if not any(worker for worker in self.workers if worker.pipe is None):
-            sorted_workers = sorted([worker for worker in self.workers if not worker.stopped], key= lambda x: x.progress)
+          if any(worker for worker in self.workers if worker.lock_acquired):
+            self.worker_timer.set()
+          else:
+            sorted_workers = sorted([worker for worker in self.workers if not worker.stopped], key= lambda x: (1 if x.pipe else 0, x.progress))
             if len(sorted_workers) > 0:
               sorted_workers[0].status = "killing"
               sorted_workers[0].kill()
-
-          if any(worker for worker in self.workers if worker.lock_acquired):
-            self.worker_timer.set()
+              self.remove_worker(sorted_workers[0])
           
         elif menu_action == "quit":
-          for worker in self.workers:
-            worker.kill()
           self.stop()
 
       self.refresh_screen()
@@ -340,6 +357,10 @@ class Client:
     k_t.start()
 
     self.exit_event.wait()
+    for worker in self.workers:
+      while worker.thread.is_alive():
+        worker.kill()
+        time.sleep(1)
 
     curses.curs_set(1)
 
@@ -362,7 +383,6 @@ class Worker:
     
     if self.job:
       cancel_job(self.job)
-    self.client.remove_worker(self)
 
   def start(self):
     self.thread = Thread(target=lambda: self.work(), daemon=True)
@@ -410,41 +430,44 @@ class Worker:
       self.client.lock.release()
       self.lock_acquired = False
 
-      with tmp_file("wb", self.job.request, self.job.filename, self.update_status) as file:
-        if self.stopped: continue
+      try:
+        with tmp_file("wb", self.job.request, self.job.filename, self) as file:
+          if self.stopped:
+            return
 
-        if self.job.encoder == "vpx":
-          output = aom_vpx_encode(self, "vpxenc", file, self.job, self.update_status)
-        elif self.job.encoder == "aom":
-          output = aom_vpx_encode(self, "aomenc", file, self.job, self.update_status)
-        else: continue
+          if self.job.encoder in encode:
+            output = encode[self.job.encoder](self, file, self.job)
+          else: continue
 
-        if output:
-          self.update_status(f"uploading {self.job.projectid} {self.job.scene}")
-          with open(output, "rb") as file:
-            while True:
-              r = upload(self.client, self.job, file, output)
-              if r:
-                if r.text == "saved":
-                  self.client.completed += 1
+          if output:
+            self.update_status(f"uploading {self.job.projectid} {self.job.scene}")
+            with open(output, "rb") as file:
+              while True:
+                r = upload(self.client, self.job, file, output)
+                if r:
+                  if r.text == "saved":
+                    self.client.completed += 1
+                  else:
+                    self.client.failed += 1
+                    self.update_status(f"error {r.status_code}")
+                    time.sleep(1)
+                  break
                 else:
-                  self.client.failed += 1
-                  self.update_status(f"error {r.status_code}")
+                  self.update_status("unable to connect - trying again")
+                  if self.stopped: break
                   time.sleep(1)
-                break
-              else:
-                self.update_status("unable to connect - trying again")
-                if self.stopped: break
+
+            while os.path.isfile(output):
+              try:
+                os.remove(output)
+              except:
                 time.sleep(1)
 
-          while os.path.isfile(output):
-            try:
-              os.remove(output)
-            except:
-              time.sleep(1)
+            self.client.jobs.remove(self.job)
+            self.job = None
+      except: continue    
 
-          self.client.jobs.remove(self.job)
-          self.job = None
+    self.client.remove_worker(self)
 
 windows_binaries = [
   ("vmaf_v0.6.1.pkl", "https://raw.githubusercontent.com/Netflix/vmaf/master/model/vmaf_v0.6.1.pkl", "binary"),
@@ -470,6 +493,9 @@ def get_vpxenc_version():
   p = subprocess.run(["vpxenc", "--help"], stdout=subprocess.PIPE)
   r = re.search(r"vp9\s+-\s+(.+)\n", p.stdout.decode("utf-8"))
   return r.group(1).replace("(default)", "").strip()
+
+def save_config(config):
+  json.dump(config, open("config", "w+"))
 
 if __name__ == "__main__":
   import argparse
@@ -511,9 +537,24 @@ if __name__ == "__main__":
 
   encoder_versions = {"aom": get_aomenc_version(), "vpx": get_vpxenc_version()}
 
-  client = Client(args)
+  if os.path.exists("config"):
+    try:
+      config = json.load(open("config", "r"))
+    except:
+      config = {}
+  else:
+    config = {}
 
-  for i in range(0, int(args.workers)):
+  client = Client(config, args)
+
+  if args.workers == 1 and "r" in config:
+    n_workers = config["r"]
+    del config["r"]
+    save_config(config)
+  else:
+    n_workers = args.workers
+
+  for i in range(0, int(n_workers)):
     client.add_worker(Worker(client))
 
   if args.noui:

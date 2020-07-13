@@ -1,8 +1,5 @@
-import re, contextlib, os
+import contextlib, os
 from tempfile import NamedTemporaryFile
-
-re_duration = re.compile(r"Duration: (\d{2}):(\d{2}):(\d{2}).(\d{2})", re.U)
-re_position = re.compile(r".*time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})", re.U)
 
 @contextlib.contextmanager
 def tmp_file(mode, content, suffix=""):

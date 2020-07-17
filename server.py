@@ -216,6 +216,11 @@ def add_project():
 
   return json.dumps({"success": True})
 
+@app.route("/api/has_password", methods=["GET"])
+@cross_origin()
+def get_has_password():
+  return json.dumps({"flag": password is not None})
+
 @app.route("/api/get_info", methods=["GET"])
 @cross_origin()
 def get_info():

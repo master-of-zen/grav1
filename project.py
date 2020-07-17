@@ -89,6 +89,9 @@ class Projects:
     job = project.jobs[scene_number]
     scene = project.scenes[scene_number]
 
+    if client in job.workers:
+      job.workers.remove(client)
+    
     if job.encoder_params != encoder_params or job.ffmpeg_params != ffmpeg_params or job.encoder != encoder:
       if client in job.workers:
         job.workers.remove(client)
@@ -127,8 +130,6 @@ class Projects:
 
     if scene["frames"] != encoded_frames:
       os.remove(encoded)
-      if client in job.workers:
-        job.workers.remove(client)
       self.logger.add("net", "discard from", client, projectid, scene_number, "frame mismatch", encoded_frames, "/", scene["frames"])
       return "frame mismatch"
 

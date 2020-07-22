@@ -189,21 +189,27 @@ class Projects:
     if not os.path.isfile("projects.json"): return
     projects = json.load(open("projects.json", "r"))
     for pid in projects:
-      project = projects[pid]
+      project_data = projects[pid]
 
-      self.add(Project(
-        project["path_in"],
-        self.path_jobs, 
-        project["encoder"],
-        project["encoder_params"],
-        project["ffmpeg_params"] if "ffmpeg_params" in project else "",
-        project["min_frames"] if "min_frames" in project else -1,
-        project["max_frames"] if "max_frames" in project else -1,
-        json.load(open(os.path.join(self.path_scenes, f"{pid}.json"), "r")) if os.path.isfile(os.path.join(self.path_scenes, f"{pid}.json")) else {},
-        project["input_frames"] if "input_frames" in project else 0,
-        project["priority"] if "priority" in project else 0,
-        pid
-      ), project["on_complete"] if "on_complete" in project else "")
+      try:
+        project = Project(
+          project_data["path_in"],
+          self.path_jobs, 
+          project_data["encoder"],
+          project_data["encoder_params"],
+          project_data["ffmpeg_params"] if "ffmpeg_params" in project_data else "",
+          project_data["min_frames"] if "min_frames" in project_data else -1,
+          project_data["max_frames"] if "max_frames" in project_data else -1,
+          json.load(open(os.path.join(self.path_scenes, f"{pid}.json"), "r")) if os.path.isfile(os.path.join(self.path_scenes, f"{pid}.json")) else {},
+          project_data["input_frames"] if "input_frames" in project_data else 0,
+          project_data["priority"] if "priority" in project_data else 0,
+          pid
+        )
+      except:
+        self.logger.default("Failed to load project", pid)
+        continue
+
+      self.add(project, project_data["on_complete"] if "on_complete" in project_data else "")
 
 class Project:
   def __init__(self, filename, path, encoder, encoder_params, ffmpeg_params="", min_frames=-1, max_frames=-1, scenes={}, total_frames=0, priority=0, id=0):

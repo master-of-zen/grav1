@@ -28,6 +28,31 @@ def get_completed(projectid):
     return send_file(projects[projectid].path_out)
   return "", 404
 
+@app.route("/api/get_project/<projectid>", methods=["GET"])
+@cross_origin()
+def get_project(projectid):
+  if projectid not in projects:
+    return "", 404
+
+  project = projects[projectid]
+
+  p = {}
+  p["projectid"] = project.projectid
+  p["input"] = project.path_in
+  p["frames"] = project.get_frames()
+  p["total_frames"] = project.input_total_frames
+  p["jobs"] = len(project.jobs)
+  p["total_jobs"] = project.total_jobs
+  p["status"] = project.status
+  p["encoder_params"] = project.encoder_params
+  p["ffmpeg_params"] = project.ffmpeg_params
+  p["encoder"] = project.encoder
+  p["scenes"] = project.scenes
+  p["priority"] = project.priority
+  p["workers"] = [job for job in project.jobs if len(project.jobs[job].workers) > 0]
+
+  return json.dumps(p)
+
 @app.route("/api/get_projects", methods=["GET"])
 @cross_origin()
 def get_projects():
@@ -41,12 +66,7 @@ def get_projects():
     p["jobs"] = len(project.jobs)
     p["total_jobs"] = project.total_jobs
     p["status"] = project.status
-    p["encoder_params"] = project.encoder_params
-    p["ffmpeg_params"] = project.ffmpeg_params
-    p["encoder"] = project.encoder
-    p["scenes"] = project.scenes
-    p["priority"] = project.priority
-    p["workers"] = [job for job in project.jobs if len(project.jobs[job].workers) > 0]
+    p["size"] = sum([project.scenes[scene]["filesize"] for scene in project.scenes])
 
     rtn.append(p)
   return json.dumps(rtn)
@@ -154,7 +174,6 @@ def modify_project(projectid):
 
   project = projects[projectid]
 
-
   if "priority" in changes:
     if not isinstance(changes["priority"], (int, float)):
       return json.dumps({
@@ -200,8 +219,22 @@ def add_project():
   if missing_files:
     return json.dumps({"success": False, "reason": f"Input files not found: {missing_files}"})
   
-  for input_file in content["input"]:
+  if "id" in content and content["id"]:
+    if len(content["input"] > 1):
+      existing_projects = ",".join(f"{content['id']}{i + 1:02d}" for i in range(content["input"]) if f"{content['id']}{i + 1:02d}" in projects)
+      if existing_projects:
+        return json.dumps({"success": False, "reason": f"Project with ids {existing_projects} already exist"})
+    else:
+      if content["id"] in projects:
+        return json.dumps({"success": False, "reason": f"Project with id {content['id']} already exist"})
+  
+  for i, input_file in enumerate(content["input"], 1):
     logger.add("net", "add project", input_file)
+
+    if "id" in content and content["id"]:
+      id = f"{content['id']}{i:02d}"
+    else:
+      id = 0
 
     projects.add(Project(
       input_file,
@@ -211,19 +244,15 @@ def add_project():
       ffmpeg_params=content["ffmpeg_params"] if "ffmpeg_params" in content else "",
       min_frames=content["min_frames"] if "min_frames" in content else -1,
       max_frames=content["max_frames"] if "max_frames" in content else -1,
-      priority=content["priority"] if "priority" in content else 0
+      priority=content["priority"] if "priority" in content else 0,
+      id=id
     ), content["on_complete"] if "on_complete" in content else "")
 
   return json.dumps({"success": True})
 
-@app.route("/api/has_password", methods=["GET"])
+@app.route("/api/get_home", methods=["GET"])
 @cross_origin()
-def get_has_password():
-  return json.dumps({"flag": password is not None})
-
-@app.route("/api/get_info", methods=["GET"])
-@cross_origin()
-def get_info():
+def get_home():
   info = {
     "versions": {
       "libaom": versions["aom"],
@@ -236,6 +265,21 @@ def get_info():
       "since": projects.telemetry["fph_time"],
       "frames": projects.telemetry["fph"]
     }
+  }
+  return json.dumps(info)
+
+@app.route("/api/get_info", methods=["GET"])
+@cross_origin()
+def get_info():
+  info = {
+    "encoders": {
+      "aomenc": versions["aom"],
+      "vpxenc": versions["vpx"]
+    },
+    "actions": list(projects.actions.keys()),
+    "protocols": ["http-get"],
+    "logs": list(logger.messages.keys()),
+    "password": password is not None
   }
   return json.dumps(info)
 

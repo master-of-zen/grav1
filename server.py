@@ -279,18 +279,18 @@ if __name__ == "__main__":
   logger = Logger()
 
   if password:
-    logger.add("info", "Starting with protected add, modify, and delete")
+    logger.info("Starting with protected add, modify, and delete")
 
   from grav1ty.util import vs_core
 
   if vs_core:
-    logger.add("info", "Vapoursynth supported")
+    logger.info("Vapoursynth supported")
 
   path_split = os.path.join(args.cwd, "jobs/{}/split")
   path_encode = os.path.join(args.cwd, "jobs/{}/encode")
   path_out = os.path.join(args.cwd, "jobs/{}/completed.webm")
 
-  logger.add("info", "Working directory:", args.cwd)
+  logger.info("Working directory:", args.cwd)
 
   versions = {
     "aom": get_aomenc_version(),
@@ -303,5 +303,5 @@ if __name__ == "__main__":
 
   projects.load_projects()
 
-  logger.add("default", "listening on port", args.port)
+  logger.default("listening on port", args.port)
   WSGIServer(app, port=args.port).start()

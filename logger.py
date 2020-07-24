@@ -2,18 +2,27 @@ import time
 
 class Logger:
   def __init__(self):
-    self.messages = {}
+    self.messages = {"default": [], "info": [], "net": [], "auto": []}
     self.cursors = {}
     self.cr = False
   
   def default(self, *argv, cr=False):
     self.add("default", *argv, cr=cr)
 
+  def info(self, *argv, cr=False):
+    self.add("info", *argv, cr=cr)
+
+  def net(self, *argv, cr=False):
+    self.add("net", *argv, cr=cr)
+
+  def auto(self, *argv, cr=False):
+    self.add("auto", *argv, cr=cr)
+
   def add(self, cat, *argv, cr=False):
     message = " ".join([str(arg) for arg in argv])
 
     if cat in self.messages:
-      if cr and self.cursors[cat] != len(self.messages[cat]):
+      if cr and cat in self.cursors and self.cursors[cat] != len(self.messages[cat]):
         self.messages[cat][self.cursors[cat]] = (time.time(), message)
       else:
         self.messages[cat].append((time.time(), message))

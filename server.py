@@ -2,7 +2,7 @@
 
 import subprocess
 
-import os, re, json
+import os, re, json, shutil
 from threading import Thread
 
 from logger import Logger
@@ -240,15 +240,27 @@ def get_info():
   return json.dumps(info)
 
 def get_dav1d_version():
+  if not shutil.which("dav1d"):
+    print("dav1d not found")
+    exit(1)
+
   p = subprocess.run(["dav1d", "-v"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
   return p.stdout.decode("utf-8").strip() + p.stderr.decode("utf-8").strip()
 
 def get_aomenc_version():
+  if not shutil.which("aomenc"):
+    print("aomenc not found")
+    exit(1)
+    
   p = subprocess.run(["aomenc", "--help"], stdout=subprocess.PIPE)
   r = re.search(r"av1\s+-\s+(.+)\n", p.stdout.decode("utf-8"))
   return r.group(1).replace("(default)", "").strip()
 
 def get_vpxenc_version():
+  if not shutil.which("vpxenc"):
+    print("vpxenc not found")
+    exit(1)
+
   p = subprocess.run(["vpxenc", "--help"], stdout=subprocess.PIPE)
   r = re.search(r"vp9\s+-\s+(.+)\n", p.stdout.decode("utf-8"))
   return r.group(1).replace("(default)", "").strip()

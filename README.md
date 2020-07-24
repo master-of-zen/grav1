@@ -63,9 +63,40 @@ If you want your program to support my web client, here are the specifications:
 
 ## Get Server Info ##
 
-This can be a map with keys and values of any type
+These are required to tell the webui what is available and what is not
 
 Name: `/api/get_info`
+
+Method: GET
+
+**Parameters:**
+
+None
+
+**Returns:**
+
+JSON object
+
+**Example:**
+
+```json
+{
+  "encoders": {
+    "aomenc": "AOMedia Project AV1 Encoder 2.0.0-487-ga822b3cc6",
+    "vpxenc": "WebM Project VP9 Encoder v1.8.2-209-gde4aedaec"
+  },
+  "actions": ["merge"],
+  "protocols": ["http-get"],
+  "logs": ["net", "info"],
+  "password": true
+}
+```
+
+## Get Server Extra Info ##
+
+This can be a map with keys and values of any type
+
+Name: `/api/get_home`
 
 Method: GET
 
@@ -110,20 +141,13 @@ JSON list of objects
 [
   {
     "projectid": "1",
-    "input": "some filename",
+    "input": "path/to/file.mkv",
     "frames": 50,
     "total_frames": 100,
     "jobs": 1,
     "total_jobs": 2,
     "status": "ready",
-    "encoder_params": "-b 10 --cpu-used=3 --end-usage=q --cq-level=20",
-    "encoder": "aom",
-    "scenes": {
-      "00001": {"filesize": 427911, "frames": 50, "encoder_params": ""},
-      "00002": {"filesize": 503284, "frames": 50, "encoder_params": ""}
-    },
-    "priority": 0,
-    "workers": []
+    "size": 12345
   },
   {
     "projectid": "4",
@@ -131,6 +155,45 @@ JSON list of objects
   }
   ...
 ]
+```
+
+## Get Project ##
+
+Name: `/api/get_project/<projectid>`
+
+Method: GET
+
+**Parameters:**
+
+Parameter                         | Type    | Description
+----------------------------------|---------|------------
+`projectid`                       | string  | Id representing the project
+
+**Returns:**
+
+JSON objects
+
+**Example:**
+
+```
+{
+  "projectid": "12345",
+  "input": "path/to/file.mkv",
+  "frames": 20,
+  "total_frames": 200,
+  "jobs": 2,
+  "total_jobs": 10,
+  "status": "ready",
+  "encoder": "aom",
+  "encoder_params": "-b 10 --cpu-used=3 --end-usage=q --cq-level=20",
+  "ffmpeg_params": "",
+  "scenes": {
+    "00001": {"filesize": 427911, "frames": 50, "encoder_params": ""},
+    "00002": {"filesize": 503284, "frames": 50, "encoder_params": ""}
+  },
+  "priority": 0,
+  "workers": []
+}
 ```
 
 ## Create Project ##
@@ -148,9 +211,12 @@ Property                          | Type    | Description
 `input`                           | list    | List of filenames / paths
 `encoder`                         | string  | Encoder used (aom/vpx/etc.)
 `encoder_params`                  | string  | Encoding parameters
+`ffmpeg_params`                   | string  | (Optional) Encoding parameters
 `min_frames`                      | integer | (Optional) Minimum amount of frames per segment
 `max_frames`                      | integer | (Optional) Maximum amount of frames per segment
 `on_complete`                     | string  | (Optional) Action to perform on completion of encode
+`priority`                        | number  | (Optional) Priority
+`id`                              | string  | (Optional) Project id
 
 **Example:**
 
@@ -161,7 +227,8 @@ Property                          | Type    | Description
   "encoder_params": "--lag-in-frames=25 -b 10 --cpu-used=3",
   "min_frames": 25,
   "max_frames": 160,
-  "on_complete": "merge"
+  "on_complete": "merge",
+  "priority": -0.5
 }
 ```
 **Returns:**

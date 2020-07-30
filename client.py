@@ -112,7 +112,7 @@ def aom_vpx_encode(encoder, encoder_path, worker, video, job):
       universal_newlines=True)
 
     worker.progress = (pass_n, 0)
-    worker.update_status(f"{encoder:.3s} pass: {pass_n} {print_progress(0, total_frames)}")
+    worker.update_status(f"{encoder:.3s}", "pass:", pass_n, print_progress(0, total_frames), progress=True)
 
     while True:
       line = worker.pipe.stdout.readline().strip()
@@ -123,7 +123,7 @@ def aom_vpx_encode(encoder, encoder_path, worker, video, job):
       match = re.search(r"frame.*?\/([^ ]+?) ", line)
       if match:
         worker.progress = (pass_n, int(match.group(1)))
-        worker.update_status(f"{encoder:.3s} pass: {pass_n} {print_progress(int(match.group(1)), total_frames)}")
+        worker.update_status(f"{encoder:.3s}", "pass:", pass_n, print_progress(int(match.group(1)), total_frames), progress=True)
 
     if ffmpeg_pipe.poll() is None:
       ffmpeg_pipe.kill()

@@ -2,17 +2,15 @@
 
 import os, subprocess, re, contextlib, requests, time, json, shutil
 from tempfile import NamedTemporaryFile
-from threading import Lock, Thread, Event
+from threading import Lock, RLock, Thread, Event
 from collections import deque
 
 bytes_map = ["B", "K", "M", "G"]
 
-KEY_UP = 259
-KEY_DOWN = 258
-KEY_LEFT = 260
-KEY_RIGHT = 261
-KEY_RETURN = 10
-KEY_R = 114
+KEY_R = ord("R")
+KEY_1 = ord("1")
+KEY_2 = ord("2")
+KEY_3 = ord("3")
 
 def n_bytes(num_bytes):
   if num_bytes / 1024 < 1: return (num_bytes, 0)
@@ -33,7 +31,6 @@ def print_progress(n, total):
 
 @contextlib.contextmanager
 def tmp_file(stream, suffix, worker):
-  worker.client.download_lock.acquire()
   try:
     file = NamedTemporaryFile(mode="wb", suffix=suffix, dir=".", delete=False)
     tmp_name = file.name
@@ -47,7 +44,6 @@ def tmp_file(stream, suffix, worker):
         file.write(chunk)
     file.flush()
     file.close()
-    worker.client.download_lock.release()
     yield tmp_name
   except: pass
   finally:
@@ -200,6 +196,8 @@ def upload(client, job, output):
   file = open(output, "rb")
   files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
   try:
+    if client.args.noui:
+      print("uploading to", f"{client.args.target}/finish_job")
     r = client.session.post(
       f"{client.args.target}/finish_job",
       data={
@@ -229,7 +227,7 @@ class Client:
     self.lock = Lock()
     self.session = requests.Session()
     self.scr = None
-    self.render_lock = Lock()
+    self.render_lock = RLock()
     
     self.menu = type("", (), {})
     self.menu.selected_item = 0
@@ -327,7 +325,7 @@ class Client:
       self.workers.remove(worker)
 
   def _refresh_screen(self):
-    self.header.set_text(f"target: {self.args.target} workers: {self.numworkers} hit: {self.completed} miss: {self.failed}")
+    self.header.set_text(f"workers: {self.numworkers} hit: {self.completed} miss: {self.failed}")
 
   def screen(self):
     while self.refresh.wait():
@@ -337,13 +335,17 @@ class Client:
       for i, worker in enumerate(self.workers, start=1):
         msg.append(f"{i:2} {worker.status}")
 
+      n_active = len([worker for worker in self.workers if worker.pipe])
+      n_uploading = len(self.upload_queue) + 1 if self.uploading else 0
+      footer = " ".join([f"[{item}]" if i == self.menu.selected_item else f" {item} " for i, item in enumerate(self.menu.items)])
+
       self.scr.erase()
 
       (mlines, mcols) = self.scr.getmaxyx()
 
       header = []
-      for line in textwrap.wrap(f"target: {args.target} workers: {self.numworkers} hit: {self.completed}"
-        f" miss: {self.failed} uploading: {len(self.upload_queue) + 1 if self.uploading else 0}", width=mcols):
+      for line in textwrap.wrap(f"workers: {self.numworkers} active: {n_active} uploading: {n_uploading} "
+        f"hit: {self.completed} miss: {self.failed}", width=mcols):
         header.append(line)
 
       body_y = len(header)
@@ -356,8 +358,8 @@ class Client:
       for i, line in enumerate(msg[self.menu.scroll:window_size + self.menu.scroll], start=body_y):
         self.scr.insstr(i, 0, line)
 
-      footer = " ".join([f"[{item}]" if i == self.menu.selected_item else f" {item} " for i, item in enumerate(self.menu.items)])
-      self.scr.insstr(mlines - 1, 0, footer.ljust(mcols), curses.color_pair(1))
+      pad = " " * (mcols - len(footer) - len(self.args.target) - 1)
+      self.scr.insstr(mlines - 1, 0, f"{footer}{pad}{self.args.target}"[:mcols].ljust(mcols) , curses.color_pair(1))
       
       self.scr.refresh()
       self.refresh.clear()
@@ -370,15 +372,15 @@ class Client:
     while True:
       c = scr.getch()
 
-      if c == KEY_UP:
+      if c == curses.KEY_UP:
         self.menu.scroll -= 1
-      elif c == KEY_DOWN:
+      elif c == curses.KEY_DOWN:
         self.menu.scroll += 1
-      elif c == KEY_LEFT:
+      elif c == curses.KEY_LEFT:
         self.menu.selected_item = max(self.menu.selected_item - 1, 0)
-      elif c == KEY_RIGHT:
+      elif c == curses.KEY_RIGHT:
         self.menu.selected_item = min(self.menu.selected_item + 1, len(self.menu.items) - 1)
-      elif c == KEY_RETURN:
+      elif c == 10 or c == curses.KEY_ENTER:
         menu_action = self.menu.items[self.menu.selected_item]
 
         if menu_action == "add":
@@ -389,20 +391,25 @@ class Client:
 
         elif menu_action == "remove":
           self.numworkers = max(self.numworkers - 1, 0)
-          if any(worker for worker in self.workers if worker.lock_acquired):
+          if self.lock.locked() and any(worker for worker in self.workers if worker.job is None and not worker.lock_acquired):
+            self.lock.release()
+          elif any(worker for worker in self.workers if worker.lock_acquired):
             self.worker_timer.set()
 
         elif menu_action == "kill":
           if len(self.workers) == self.numworkers or any(worker for worker in self.workers if worker.job is None):
             self.numworkers = max(self.numworkers - 1, 0)
 
-          if any(worker for worker in self.workers if worker.lock_acquired):
+          if self.lock.locked() and any(worker for worker in self.workers if worker.job is None and not worker.lock_acquired):
+            self.lock.release()
+          elif any(worker for worker in self.workers if worker.lock_acquired):
             self.worker_timer.set()
           else:
-            sorted_workers = sorted([worker for worker in self.workers if not worker.stopped], key= lambda x: (1 if x.pipe else 0, x.progress))
+            sorted_workers = sorted([worker for worker in self.workers if not worker.stopped], key= lambda x: (1 if x.pipe else 0, x.progress, x.lock_acquired, 1 if x.job else None))
             if len(sorted_workers) > 0:
               sorted_workers[0].status = "killing"
               sorted_workers[0].kill()
+                
               self.remove_worker(sorted_workers[0])
           
         elif menu_action == "quit":
@@ -410,6 +417,7 @@ class Client:
       elif c == KEY_R:
         self.render_lock.acquire()
         self.scr.clear()
+        self.scr.refresh()
         self.render_lock.release()
 
       self.refresh_screen()
@@ -472,15 +480,21 @@ class Worker:
     while True:
       self.update_status("waiting", progress=True)
 
-      if not self.lock_acquired:
-        self.client.lock.acquire()
-        self.lock_acquired = True
+      self.client.lock.acquire()
+      self.lock_acquired = True
 
       if len(self.client.workers) > self.client.numworkers or self.stopped:
-        self.client.lock.release()
+        if self.client.lock.locked():
+          self.client.lock.release()
         self.client.remove_worker(self)
         return
 
+      if self.client.download_lock.locked():
+        self.client.lock.release()
+        self.lock_acquired = False
+        continue
+
+      self.client.download_lock.acquire()
       self.update_status("downloading")
 
       while True:
@@ -489,37 +503,46 @@ class Worker:
         for i in range(0, 15):
           self.client.worker_timer.clear()
           if len(self.client.workers) > self.client.numworkers or self.stopped:
-            self.client.lock.release()
+            if self.client.lock.locked():
+              self.client.lock.release()
+            self.client.download_lock.release()
             self.client.remove_worker(self)
             return
           self.update_status(f"waiting...{15-i:2d}")
           self.client.worker_timer.wait(1)
           self.client.worker_timer.clear()
 
-      self.client.lock.release()
-      self.lock_acquired = False
-
       self.update_status("received", self.job.projectid, self.job.scene)
       
       try:
         with tmp_file(self.job.request, self.job.filename, self) as file:
+          if self.client.lock.locked():
+            self.client.lock.release()
+          self.client.download_lock.release()
+          self.lock_acquired = False
+
           if self.stopped:
             return
 
           if self.job.encoder in self.client.encode:
             success, output = self.client.encode[self.job.encoder](self, file, self.job)
-          else: continue
+          else:
+            success, output = False, None
 
           if success:
             self.client.upload(self.job, output)
             self.job = None
-          else:
+          elif output:
             while os.path.exists(output):
               try:
                 os.remove(output)
               except: pass
 
-      except: continue    
+      except: pass  
+
+      if self.lock_acquired:
+        self.client.lock.release()
+        self.client.download_lock.release()
 
     self.client.remove_worker(self)
 

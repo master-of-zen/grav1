@@ -53,9 +53,8 @@ def tmp_file(stream, suffix, worker):
   finally:
     while os.path.exists(tmp_name):
       try:
-        os.unlink(tmp_name)
-      except:
-        pass
+        os.remove(tmp_name)
+      except: pass
 
 def aom_vpx_encode(encoder, encoder_path, worker, video, job):
   encoder_params = job.encoder_params
@@ -135,10 +134,7 @@ def aom_vpx_encode(encoder, encoder_path, worker, video, job):
   if os.path.isfile(f"{video}.log"):
     os.remove(f"{video}.log")
 
-  if success:
-    return output_filename
-  else:
-    return False
+  return success, output_filename
 
 def cancel_job(job):
   try:
@@ -497,12 +493,17 @@ class Worker:
             return
 
           if self.job.encoder in self.client.encode:
-            output = self.client.encode[self.job.encoder](self, file, self.job)
+            success, output = self.client.encode[self.job.encoder](self, file, self.job)
           else: continue
 
-          if output:
+          if success:
             self.client.upload(self.job, output)
             self.job = None
+          else:
+            while os.path.exists(output):
+              try:
+                os.remove(output)
+              except: pass
 
       except: continue    
 

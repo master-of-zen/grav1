@@ -3,7 +3,7 @@
 import os, subprocess, re, contextlib, requests, time, json, shutil
 from tempfile import NamedTemporaryFile
 from threading import Lock, Thread, Event
-from queue import Queue
+from collections import deque
 
 bytes_map = ["B", "K", "M", "G"]
 
@@ -149,7 +149,9 @@ def cancel_job(job):
   except: pass
 
 def fetch_new_job(client):
-  jobs_str = json.dumps([{"projectid": worker.job.projectid, "scene": worker.job.scene} for worker in client.workers if worker.job is not None])
+  jobs = [{"projectid": worker.job.projectid, "scene": worker.job.scene} for worker in client.workers if worker.job is not None]
+  jobs.extend([{"projectid": up[0].projectid, "scene": up[0].scene} for up in client.upload_queue])
+  jobs_str = json.dumps(jobs)
   try:
     r = client.session.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3, stream=True)
     if r.status_code != 200 or "success" not in r.headers or r.headers["success"] == "0":
@@ -252,14 +254,20 @@ class Client:
 
     self.download_lock = Lock()
 
-    self.upload_queue = Queue()
+    self.upload_queue = deque()
+    self.upload_queue_event = Event()
     self.upload_loop = Thread(target=self._upload_loop, daemon=True)
     self.upload_loop.start()
     self.uploading = False
 
   def _upload_loop(self):
     while True:
-      job, output = self.upload_queue.get()
+      if len(self.upload_queue) == 0:
+        self.upload_queue_event.wait()
+
+      self.upload_queue_event.clear()
+      
+      job, output = self.upload_queue.popleft()
       self.uploading = True
 
       uploads = 3
@@ -293,12 +301,12 @@ class Client:
         except:
           time.sleep(1)
 
-      self.upload_queue.task_done()
       self.uploading = False
       self.refresh_screen()
 
   def upload(self, job, output):
-    self.upload_queue.put((job, output))
+    self.upload_queue.append((job, output))
+    self.upload_queue_event.set()
     self.refresh_screen()
 
   def stop(self, message=""):
@@ -335,7 +343,7 @@ class Client:
 
       header = []
       for line in textwrap.wrap(f"target: {args.target} workers: {self.numworkers} hit: {self.completed}"
-        f" miss: {self.failed} uploading: {self.upload_queue.qsize() + 1 if self.uploading else 0}", width=mcols):
+        f" miss: {self.failed} uploading: {len(self.upload_queue) + 1 if self.uploading else 0}", width=mcols):
         header.append(line)
 
       body_y = len(header)

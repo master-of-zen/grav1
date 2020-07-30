@@ -255,10 +255,12 @@ class Client:
     self.upload_queue = Queue()
     self.upload_loop = Thread(target=self._upload_loop, daemon=True)
     self.upload_loop.start()
+    self.uploading = False
 
   def _upload_loop(self):
     while True:
       job, output = self.upload_queue.get()
+      self.uploading = True
 
       uploads = 3
       while True:
@@ -292,9 +294,12 @@ class Client:
           time.sleep(1)
 
       self.upload_queue.task_done()
+      self.uploading = False
+      self.refresh_screen()
 
   def upload(self, job, output):
     self.upload_queue.put((job, output))
+    self.refresh_screen()
 
   def stop(self, message=""):
     self.stopping = True
@@ -329,12 +334,13 @@ class Client:
       (mlines, mcols) = self.scr.getmaxyx()
 
       header = []
-      for line in textwrap.wrap(f"target: {args.target} workers: {client.numworkers} hit: {client.completed} miss: {client.failed}", width=mcols):
+      for line in textwrap.wrap(f"target: {args.target} workers: {self.numworkers} hit: {self.completed}"
+        f" miss: {self.failed} uploading: {self.upload_queue.qsize() + 1 if self.uploading else 0}", width=mcols):
         header.append(line)
 
       body_y = len(header)
       window_size = mlines - body_y - 1
-      self.menu.scroll = max(min(self.menu.scroll, len(client.workers) - window_size), 0)
+      self.menu.scroll = max(min(self.menu.scroll, len(self.workers) - window_size), 0)
 
       for i, line in enumerate(header):
         self.scr.insstr(i, 0, line.ljust(mcols), curses.color_pair(1))

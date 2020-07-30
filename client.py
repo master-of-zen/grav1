@@ -275,7 +275,6 @@ class Client:
               print("bad upload", "retrying", job.projectid, job.scene)
             uploads -= 1
             time.sleep(1)
-            continue
           else:
             if self.args.noui:
               print("failed", r.status_code, r.text, job.projectid, job.scene)
@@ -297,7 +296,7 @@ class Client:
       self.upload_queue.task_done()
 
   def upload(self, job, output):
-    self.upload_queue.put(job, output)
+    self.upload_queue.put((job, output))
 
   def stop(self, message=""):
     self.stopping = True

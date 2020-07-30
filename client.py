@@ -12,6 +12,7 @@ KEY_DOWN = 258
 KEY_LEFT = 260
 KEY_RIGHT = 261
 KEY_RETURN = 10
+KEY_R = 114
 
 def n_bytes(num_bytes):
   if num_bytes / 1024 < 1: return (num_bytes, 0)
@@ -230,6 +231,7 @@ class Client:
     self.lock = Lock()
     self.session = requests.Session()
     self.scr = None
+    self.render_lock = Lock()
     
     self.menu = type("", (), {})
     self.menu.selected_item = 0
@@ -321,6 +323,7 @@ class Client:
   def screen(self):
     while self.refresh.wait():
       if not self.scr: continue
+      self.render_lock.acquire()
       msg = []
       for i, worker in enumerate(self.workers, start=1):
         msg.append(f"{i:2} {worker.status}")
@@ -348,6 +351,7 @@ class Client:
       
       self.scr.refresh()
       self.refresh.clear()
+      self.render_lock.release()
 
   def refresh_screen(self):
     self.refresh.set()
@@ -393,6 +397,10 @@ class Client:
           
         elif menu_action == "quit":
           self.stop()
+      elif c == KEY_R:
+        self.render_lock.acquire()
+        self.scr.clear()
+        self.render_lock.release()
 
       self.refresh_screen()
   

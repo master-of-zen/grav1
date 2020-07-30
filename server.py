@@ -108,12 +108,12 @@ def cancel_job():
   scene_number = str(request.form["scene"])
 
   if projectid not in projects:
-    return "project not found", 200
+    return "project not found", 404
 
   project = projects[projectid]
 
   if scene_number not in project.jobs:
-    return "job not found", 200
+    return "job not found", 404
 
   job = project.jobs[scene_number]
 

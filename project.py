@@ -1,4 +1,4 @@
-import os, json, time, subprocess, re
+import os, json, time, subprocess, re, logging
 from threading import Thread, Event
 
 from grav1ty.split import split, verify_split
@@ -7,9 +7,10 @@ from util import tmp_file
 
 from actions import actions
 
+from logger import NET
+
 class Projects:
-  def __init__(self, logger, working_dir):
-    self.logger = logger
+  def __init__(self, working_dir):
     self.projects = {}
     self.working_dir = working_dir
     self.path_projects = os.path.join(working_dir, "projects.json")
@@ -41,11 +42,10 @@ class Projects:
       self.action_lock.set()
 
   def project_on_complete(self, project):
-    self.add_action(lambda: actions[project.action](self.logger, self, project))
+    self.add_action(lambda: actions[project.action](self, project))
 
   def add(self, project, action="", save=True):
-    self.logger.default("added project", project.projectid)
-    project.logger = self.logger
+    logging.info("added project", project.projectid)
     project.projects = self
 
     if action:
@@ -53,7 +53,6 @@ class Projects:
       project.on_complete = self.project_on_complete
 
     self.projects[project.projectid] = project
-
     if save:
       self.save_projects()
 
@@ -82,13 +81,13 @@ class Projects:
 
   def check_job(self, projectid, client, encoder, encoder_params, ffmpeg_params, scene_number, file):
     if projectid not in self.projects:
-      self.logger.info("project not found", projectid)
+      logging.info("project not found", projectid)
       return "project not found"
 
     project = self.projects[projectid]
 
     if scene_number not in project.jobs:
-      self.logger.info("job not found", projectid, scene_number)
+      logging.info("job not found", projectid, scene_number)
       return "job not found"
 
     job = project.jobs[scene_number]
@@ -98,20 +97,20 @@ class Projects:
       job.workers.remove(client)
     
     if job.encoder_params != encoder_params or job.ffmpeg_params != ffmpeg_params or job.encoder != encoder:
-      self.logger.net("discard from", client, projectid, scene_number, "bad params")
+      logging.log(NET, "discard from", client, projectid, scene_number, "bad params")
       return "bad params"
 
     encoded = os.path.join(project.path_encode, job.encoded_filename)
 
     if scene["filesize"] > 0:
-      self.logger.net("discard from", client, projectid, scene_number, "already done")
+      logging.log(NET, "discard from", client, projectid, scene_number, "already done")
       return "already done"
 
     os.makedirs(project.path_encode, exist_ok=True)
     file.save(encoded)
     
     if os.stat(encoded).st_size == 0:
-      self.logger.net("discard from", client, projectid, scene_number, "bad upload")
+      logging.log(NET, "discard from", client, projectid, scene_number, "bad upload")
       return "bad upload"
     
     if job.encoder == "aom":
@@ -124,7 +123,7 @@ class Projects:
       ], capture_output=True)
 
       if dav1d.returncode == 1:
-        self.logger.net("discard from", client, projectid, scene_number, "dav1d decode error")
+        logging.log(NET, "discard from", client, projectid, scene_number, "dav1d decode error")
         return "bad encode"
       
       encoded_frames = int(re.search(r"Decoded [0-9]+/([0-9]+) frames", dav1d.stdout.decode("utf-8") + dav1d.stderr.decode("utf-8")).group(1))
@@ -133,7 +132,7 @@ class Projects:
 
     if scene["frames"] != encoded_frames:
       os.remove(encoded)
-      self.logger.net("discard from", client, projectid, scene_number, "frame mismatch", encoded_frames, "/", scene["frames"])
+      logging.log(NET, "discard from", client, projectid, scene_number, "frame mismatch", encoded_frames, "/", scene["frames"])
       return "frame mismatch"
 
     scene["filesize"] = os.stat(encoded).st_size
@@ -143,13 +142,13 @@ class Projects:
       
     del project.jobs[scene_number]
 
-    self.logger.net("recv", projectid, scene_number, "from", client)
+    logging.log(NET, "recv", projectid, scene_number, "from", client)
     self.hit(scene["frames"])
 
     self.save_projects()
 
     if len(project.jobs) == 0 and project.get_frames() == project.total_frames:
-      self.logger.default("done", projectid)
+      logging.info("done", projectid)
       self.add_action(project.complete)
       
     return "saved"
@@ -210,7 +209,7 @@ class Projects:
           pid
         )
       except:
-        self.logger.default("Failed to load project", pid)
+        logging.info("Failed to load project", pid)
         continue
 
       self.add(project, project_data["on_complete"] if "on_complete" in project_data else "", save=False)
@@ -242,7 +241,6 @@ class Project:
 
     self.action = ""
     self.on_complete = None
-    self.logger = None
 
     self.projects = None
   
@@ -263,7 +261,7 @@ class Project:
       self.scenes[scene]["filesize"] = os.stat(file_ivf).st_size if os.path.isfile(file_ivf) else 0
       self.total_frames += self.scenes[scene]["frames"]
 
-    self.logger.default(self.projectid, "loaded")
+    logging.info(self.projectid, "loaded")
 
     if self.stopped: return
     
@@ -291,7 +289,7 @@ class Project:
 
       self.set_status("ready")
     else:
-      self.logger.default(self.projectid, "total frame mismatch", self.total_frames, self.input_total_frames)
+      logging.info(self.projectid, "total frame mismatch", self.total_frames, self.input_total_frames)
       self.set_status("total frame mismatch")
 
     if os.path.isfile(self.path_out):
@@ -303,22 +301,22 @@ class Project:
     if self.stopped: return
     
     self.set_status("splitting")
-    self.logger.default(self.projectid, "splitting")
+    logging.info(self.projectid, "splitting")
     self.scenes, self.input_total_frames, segments = split(
       self.path_in,
       self.path_split,
       self.min_frames,
       self.max_frames,
-      cb=lambda message, cr=False: self.logger.default(self.projectid, message, cr=cr)
+      cb=lambda message, cr=False: logging.info(self.projectid, message, extra={"cr": cr})
     )
 
-    self.logger.default(self.projectid, "verifying split")
+    logging.info(self.projectid, "verifying split")
     self.set_status("verifying split")
     verify_split(
       self.path_in,
       self.path_split,
       segments,
-      cb=lambda message, cr=False: self.logger.default(self.projectid, message, cr=cr)
+      cb=lambda message, cr=False: logging.info(self.projectid, message, extra={"cr": cr})
     )
 
     self.projects.save_projects()
@@ -329,7 +327,7 @@ class Project:
       self.set_status("done! joining files")
       self.concat()
       self.set_status("complete")
-      self.logger.default(self.projectid, "completed")
+      logging.info(self.projectid, "completed")
       if self.on_complete:
         self.on_complete(self)
 
@@ -340,7 +338,7 @@ class Project:
     return f"{scene_n}.ivf"
 
   def concat(self):
-    self.logger.default(self.projectid, "concat")
+    logging.info(self.projectid, "concat")
     keys = list(self.scenes.keys())
     keys.sort()
     scenes = [os.path.join(self.path_encode, self.get_encoded_filename(os.path.splitext(scene)[0])).replace("\\", "/") for scene in keys]
@@ -348,7 +346,7 @@ class Project:
     with tmp_file("w", content) as file:
       cmd = f"ffmpeg -hide_banner -f concat -safe 0 -y -i".split(" ")
       cmd.extend([file, "-c", "copy", self.path_out])
-      ffmpeg(cmd, lambda x: (self.set_status(f"concat {x}/{self.total_frames}"), self.logger.default(self.projectid, f"concat {x}/{self.total_frames}", cr=True)))
+      ffmpeg(cmd, lambda x: (self.set_status(f"concat {x}/{self.total_frames}"), logging.info(self.projectid, "concat", f"{x}/{self.total_frames}", extra={"cr": True})))
 
 class Job:
   def __init__(self, project, scene, encoder, path, encoded_filename, encoder_params, ffmpeg_params, start, frames):

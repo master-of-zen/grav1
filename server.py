@@ -2,10 +2,12 @@
 
 import subprocess
 
-import os, re, json, shutil
-from threading import Thread
+import os, re, json, shutil, logging
+from threading import Thread, Event
 
-from logger import Logger
+from logger import NET
+from logger import setup as setup_logging
+
 from project import Projects, Project
 
 from flask import Flask, request, send_file, make_response, send_from_directory
@@ -81,7 +83,7 @@ def get_job(jobs):
     workerid = f"{request.environ['REMOTE_ADDR']}:{request.environ['REMOTE_PORT']}"
     new_job.workers.append(workerid)
 
-    logger.add("net", "sent", new_job.project.projectid, new_job.scene, "to", workerid, new_job.frames)
+    logging.log(NET, "sent", new_job.project.projectid, new_job.scene, "to", workerid, new_job.frames)
 
     resp = make_response(send_file(new_job.path))
     resp.headers["success"] = "1"
@@ -119,7 +121,7 @@ def cancel_job():
 
   if client in job.workers:
     job.workers.remove(client)
-    logger.add("net", "cancel", projectid, scene_number, "by", client)
+    logging.log(NET, "cancel", projectid, scene_number, "by", client)
 
   return "saved", 200
 
@@ -150,7 +152,7 @@ def list_directory():
 def delete_project(projectid):
   content = request.json
   if password and ("password" not in content or content["password"] != password):
-    logger.add("net", "Bad password.")
+    logging.log(NET, "Bad password.")
     return json.dumps({"success": False, "reason": "Bad password."})
 
   if projectid not in projects:
@@ -166,7 +168,7 @@ def delete_project(projectid):
 def modify_project(projectid):
   changes = request.json
   if password and ("password" not in changes or changes["password"] != password):
-    logger.add("net", "Bad password.")
+    logging.log(NET, "Bad password.")
     return json.dumps({"success": False, "reason": "Bad password."})
 
   if projectid not in projects:
@@ -192,7 +194,7 @@ def modify_project(projectid):
 def add_project():
   content = request.json
   if password and ("password" not in content or content["password"] != password):
-    logger.add("net", "Bad password.")
+    logging.log(NET, "Bad password.")
     return json.dumps({"success": False, "reason": "Bad password."})
 
   missing_fields = ",".join([key for key in ["input", "encoder", "encoder_params"] if key not in content])
@@ -229,7 +231,7 @@ def add_project():
         return json.dumps({"success": False, "reason": f"Project with id {content['id']} already exist"})
   
   for i, input_file in enumerate(content["input"], 1):
-    logger.add("net", "add project", input_file)
+    logging.log(NET, "add project", input_file)
 
     if "id" in content and content["id"]:
       id = f"{content['id']}{i:02d}"
@@ -278,7 +280,7 @@ def get_info():
     },
     "actions": list(projects.actions.keys()),
     "protocols": ["http-get"],
-    "logs": list(logger.messages.keys()),
+    "logs": list(logging._levelToName.values()),
     "password": password is not None
   }
   return json.dumps(info)
@@ -320,21 +322,21 @@ if __name__ == "__main__":
 
   password = args.password
 
-  logger = Logger()
+  setup_logging()
 
   if password:
-    logger.info("Starting with protected add, modify, and delete")
+    logging.info("Starting with protected add, modify, and delete")
 
   from grav1ty.util import vs_core
 
   if vs_core:
-    logger.info("Vapoursynth supported")
+    logging.info("Vapoursynth supported")
 
   path_split = os.path.join(args.cwd, "jobs/{}/split")
   path_encode = os.path.join(args.cwd, "jobs/{}/encode")
   path_out = os.path.join(args.cwd, "jobs/{}/completed.webm")
 
-  logger.info("Working directory:", args.cwd)
+  logging.info("Working directory:", args.cwd)
 
   versions = {
     "aom": get_aomenc_version(),
@@ -342,10 +344,9 @@ if __name__ == "__main__":
     "dav1d": get_dav1d_version()
   }
 
-  projects = Projects(logger, args.cwd)
-
+  projects = Projects(args.cwd)
 
   projects.load_projects()
 
-  logger.default("listening on port", args.port)
   WSGIServer(app, port=args.port).start()
+  logging.info("listening on port", args.port)

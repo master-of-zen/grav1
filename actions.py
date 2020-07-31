@@ -1,10 +1,14 @@
-import os, subprocess, re, shutil
+# -*- coding: utf-8 -*-
+import os, subprocess, re, shutil, logging
+from threading import Thread, Event
 from grav1ty.util import ffmpeg
 
 merge_out = "merged"
 
-def merge(logger, projects, project):
-  os.makedirs(merge_out, exist_ok=True)
+AUTO = 13
+logging.addLevelName(AUTO, "AUTO")
+
+def merge(projects, project):
   out_name = f"{os.path.splitext(os.path.basename(project.path_in))[0]}.mkv"
 
   cmd = [
@@ -19,7 +23,7 @@ def merge(logger, projects, project):
     os.path.join(merge_out, out_name)
   ]
 
-  logger.add("auto", project.projectid, "merging")
-  ffmpeg(cmd, lambda x: logger.add("auto", "merging", project.projectid, f"{x}/{project.total_frames}", cr=True))
+  logging.log(AUTO, project.projectid, "merging")
+  ffmpeg(cmd, lambda x: logging.log(AUTO, "merging", project.projectid, f"{x}/{project.total_frames}", extra={"cr": True}))
 
 actions = {"merge": merge}

@@ -1,42 +1,54 @@
-import time
+import logging
+from threading import Thread, Event
 
-class Logger:
+class Logger(logging.Handler):
   def __init__(self):
-    self.messages = {"default": [], "info": [], "net": [], "auto": []}
-    self.cursors = {}
-    self.cr = False
-  
-  def default(self, *argv, cr=False):
-    self.add("default", *argv, cr=cr)
+    super(Logger, self).__init__()
+    self.cr = {}
+    self.last_cr = None
+    self.save_event = Event()
+    Thread(target=self._save, daemon=True).start()
 
-  def info(self, *argv, cr=False):
-    self.add("info", *argv, cr=cr)
+  def _save(self):
+    while self.save_event.wait():
+      # TODO: save to file
+      self.save_event.clear()
 
-  def net(self, *argv, cr=False):
-    self.add("net", *argv, cr=cr)
+  def format(self, record):
+    msg = [record.msg] + [str(s) for s in record.args]
+    msg = " ".join(msg)
+    return msg, f"[{record.levelname.lower()}] {msg}"
 
-  def auto(self, *argv, cr=False):
-    self.add("auto", *argv, cr=cr)
+  def emit(self, record):
+    msg, formatted = self.format(record)
 
-  def add(self, cat, *argv, cr=False):
-    message = " ".join([str(arg) for arg in argv])
-
-    if cat in self.messages:
-      if cr and cat in self.cursors and self.cursors[cat] != len(self.messages[cat]):
-        self.messages[cat][self.cursors[cat]] = (time.time(), message)
-      else:
-        self.messages[cat].append((time.time(), message))
-    else:
-      self.messages[cat] = [(time.time(), message)]
-
-    if self.cr and cat in self.cursors and not cr and self.cursors[cat] < len(self.messages[cat]) - 1:
+    if self.last_cr and self.last_cr != record.levelname:
       print()
 
-    if cr:
-      print(f"[{cat}]", message, end="\r")
+    if "cr" in dir(record) and record.cr:
+      print(formatted, end="\r")
+      self.cr[record.levelname] = msg
+      self.last_cr = record.levelname
     else:
-      print(f"[{cat}]", message)
+      if record.levelname in self.cr:
+        print()
+        del self.cr[record.levelname]
+      print(formatted)
+      self.last_cr = None
 
-    self.cursors[cat] = len(self.messages[cat]) - (1 if cr else 0)
-    self.cr = cr
+    # save this
+    msg = {
+      "msg": msg,
+      "created": record.created
+    }
+
+    self.save_event.set()
+
+NET = 11
+
+def setup():
+  logging.addLevelName(NET, "NET")
   
+  root = logging.getLogger()
+  root.addHandler(Logger())
+  root.setLevel(0)

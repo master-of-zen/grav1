@@ -147,6 +147,9 @@ def cancel_job(job):
 def fetch_new_job(client):
   jobs = [{"projectid": worker.job.projectid, "scene": worker.job.scene} for worker in client.workers if worker.job is not None]
   jobs.extend([{"projectid": up[0].projectid, "scene": up[0].scene} for up in client.upload_queue])
+  if client.uploading:
+    jobs.append({"projectid": client.uploading.projectid, "scene": client.uploading.scene})
+
   jobs_str = json.dumps(jobs)
   try:
     r = client.session.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3, stream=True)
@@ -256,7 +259,7 @@ class Client:
     self.upload_queue_event = Event()
     self.upload_loop = Thread(target=self._upload_loop, daemon=True)
     self.upload_loop.start()
-    self.uploading = False
+    self.uploading = None
 
   def _upload_loop(self):
     while True:
@@ -266,7 +269,7 @@ class Client:
       self.upload_queue_event.clear()
       
       job, output = self.upload_queue.popleft()
-      self.uploading = True
+      self.uploading = job
 
       uploads = 3
       while True:
@@ -299,7 +302,7 @@ class Client:
         except:
           time.sleep(1)
 
-      self.uploading = False
+      self.uploading = None
       self.refresh_screen()
 
   def upload(self, job, output):

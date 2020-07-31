@@ -67,7 +67,7 @@ class Projects:
       all_jobs.extend(project.jobs.values())
 
     all_jobs = [job for job in all_jobs if not any(job.scene == job2["scene"] and str(job.project.projectid) == str(job2["projectid"]) for job2 in skip_jobs)]
-    all_jobs = sorted(all_jobs, key=lambda job: (job.project.priority, len(job.workers), job.frames))
+    all_jobs = sorted(all_jobs, key=lambda job: (job.project.priority, len(job.workers), -job.frames))
 
     return all_jobs[0] if len(all_jobs) > 0 else None
 

@@ -69,6 +69,7 @@ def get_projects():
     p["total_jobs"] = project.total_jobs
     p["status"] = project.status
     p["size"] = sum([project.scenes[scene]["filesize"] for scene in project.scenes])
+    p["priority"] = project.priority
 
     rtn.append(p)
   return json.dumps(rtn)

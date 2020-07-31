@@ -349,5 +349,5 @@ if __name__ == "__main__":
 
   projects.load_projects()
 
-  WSGIServer(app, port=args.port).start()
   logging.info("listening on port", args.port)
+  WSGIServer(app, port=int(args.port)).start()

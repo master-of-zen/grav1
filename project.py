@@ -92,18 +92,19 @@ class Projects:
 
     job = project.jobs[scene_number]
     scene = project.scenes[scene_number]
-
-    if client in job.workers:
-      job.workers.remove(client)
     
     if job.encoder_params != encoder_params or job.ffmpeg_params != ffmpeg_params or job.encoder != encoder:
       logging.log(NET, "discard from", client, projectid, scene_number, "bad params")
+      if client in job.workers:
+        job.workers.remove(client)
       return "bad params"
 
     encoded = os.path.join(project.path_encode, job.encoded_filename)
 
     if scene["filesize"] > 0:
       logging.log(NET, "discard from", client, projectid, scene_number, "already done")
+      if client in job.workers:
+        job.workers.remove(client)
       return "already done"
 
     os.makedirs(project.path_encode, exist_ok=True)
@@ -111,6 +112,8 @@ class Projects:
     
     if os.stat(encoded).st_size == 0:
       logging.log(NET, "discard from", client, projectid, scene_number, "bad upload")
+      if client in job.workers:
+        job.workers.remove(client)
       return "bad upload"
     
     if job.encoder == "aom":
@@ -124,6 +127,8 @@ class Projects:
 
       if dav1d.returncode == 1:
         logging.log(NET, "discard from", client, projectid, scene_number, "dav1d decode error")
+        if client in job.workers:
+          job.workers.remove(client)
         return "bad encode"
       
       encoded_frames = int(re.search(r"Decoded [0-9]+/([0-9]+) frames", dav1d.stdout.decode("utf-8") + dav1d.stderr.decode("utf-8")).group(1))
@@ -133,6 +138,8 @@ class Projects:
     if scene["frames"] != encoded_frames:
       os.remove(encoded)
       logging.log(NET, "discard from", client, projectid, scene_number, "frame mismatch", encoded_frames, "/", scene["frames"])
+      if client in job.workers:
+        job.workers.remove(client)
       return "frame mismatch"
 
     scene["filesize"] = os.stat(encoded).st_size

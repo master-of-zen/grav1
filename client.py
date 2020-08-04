@@ -52,7 +52,7 @@ def tmp_file(stream, suffix, worker):
         os.remove(tmp_name)
       except: pass
 
-def aom_vpx_encode(encoder, encoder_path, worker, video, job):
+def aom_vpx_encode(encoder, encoder_path, worker, job, video):
   encoder_params = job.encoder_params
   ffmpeg_params = job.ffmpeg_params
 
@@ -88,10 +88,16 @@ def aom_vpx_encode(encoder, encoder_path, worker, video, job):
 
   aom = [encoder_path, "-", "--ivf", f"--fpf={video}.log", f"--threads={args.threads}", "--passes=2"]
 
-  passes = [aom + cmd for cmd in [
-    re.sub(r"--denoise-noise-level=[0-9]+", "", encoder_params).split(" ") + ["--pass=1", "-o", os.devnull],
-    encoder_params.split(" ") + ["--pass=2", "-o", output_filename]
-  ]]
+  passes = [
+    aom + re.sub(r"--denoise-noise-level=[0-9]+", "", encoder_params).split(" ") + ["--pass=1", "-o", os.devnull],
+    aom + encoder_params.split(" ") + ["--pass=2", "-o", output_filename]
+  ]
+
+  if job.grain:
+    if not job.grain_file:
+      return False, None
+    else:
+      passes[1].append(f"--film-grain-table={job.grain_file}")
 
   total_frames = int(job.frames)
 
@@ -144,57 +150,6 @@ def cancel_job(job):
     )
   except: pass
 
-def fetch_new_job(client):
-  jobs = [{"projectid": worker.job.projectid, "scene": worker.job.scene} for worker in client.workers if worker.job is not None]
-  jobs.extend([{"projectid": up[0].projectid, "scene": up[0].scene} for up in client.upload_queue])
-  if client.uploading:
-    jobs.append({"projectid": client.uploading.projectid, "scene": client.uploading.scene})
-
-  jobs_str = json.dumps(jobs)
-  try:
-    r = client.session.get(f"{client.args.target}/api/get_job/{jobs_str}", timeout=3, stream=True)
-    if r.status_code != 200 or "success" not in r.headers or r.headers["success"] == "0":
-      return None
-
-    job = type("", (), {})
-    job.id = r.headers["id"]
-    job.filename = r.headers["filename"]
-    job.scene = r.headers["scene"]
-    job.encoder = r.headers["encoder"]
-    job.encoder_params = r.headers["encoder_params"]
-    job.ffmpeg_params = r.headers["ffmpeg_params"]
-    job.projectid = r.headers["projectid"]
-    job.frames = r.headers["frames"]
-    job.start = r.headers["start"]
-    job.request = r
-
-    if r.headers["version"] != encoder_versions[job.encoder]:
-      cancel_job(job)
-
-      if job.encoder == "aom":
-        if os.path.isfile("aomenc.exe"):
-          client.config["r"] = len(client.workers)
-          save_config(client.config)
-          os.remove("aomenc.exe")
-          client.stop(f"bad aom version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}\n\nRestart to re-download.")
-        else:
-          client.stop(f"bad aom version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}")
-
-      if job.encoder == "vpx":
-        if os.path.isfile("vpxenc.exe"):
-          client.config["r"] = len(client.workers)
-          save_config(client.config)
-          os.remove("vpxenc.exe")
-          client.stop(f"bad vpx version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}\n\nRestart to re-download.")
-        else:
-          client.stop(f"bad vpx version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}")
-
-      return None
-
-    return job
-  except:
-    return None
-
 def upload(client, job, output):
   file = open(output, "rb")
   files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
@@ -210,7 +165,8 @@ def upload(client, job, output):
         "encoder": job.encoder,
         "version": encoder_versions[job.encoder],
         "encoder_params": job.encoder_params,
-        "ffmpeg_params": job.ffmpeg_params
+        "ffmpeg_params": job.ffmpeg_params,
+        "grain": int(len(job.grain_file) > 0)
       },
       files=files)
     return r
@@ -218,6 +174,21 @@ def upload(client, job, output):
     return False
   finally:
     file.close()
+
+class Job:
+  def __init__(self, r):
+    self.id = r.headers["id"]
+    self.filename = r.headers["filename"]
+    self.scene = r.headers["scene"]
+    self.encoder = r.headers["encoder"]
+    self.encoder_params = r.headers["encoder_params"]
+    self.ffmpeg_params = r.headers["ffmpeg_params"]
+    self.projectid = r.headers["projectid"]
+    self.frames = r.headers["frames"]
+    self.start = r.headers["start"]
+    self.request = r
+    self.grain = int(r.headers["grain"]) if "grain" in r.headers else None
+    self.grain_file = ""
 
 class Client:
   def __init__(self, config, args):
@@ -249,8 +220,8 @@ class Client:
     self.exit_message = None
 
     self.encode = {
-      "aom": lambda worker, video, job: aom_vpx_encode("aom", args.aomenc, worker, video, job),
-      "vpx": lambda worker, video, job: aom_vpx_encode("vpx", args.vpxenc, worker, video, job)
+      "aom": lambda worker, job, video: aom_vpx_encode("aom", args.aomenc, worker, job, video),
+      "vpx": lambda worker, job, video: aom_vpx_encode("vpx", args.vpxenc, worker, job, video)
     }
 
     self.download_lock = Lock()
@@ -309,6 +280,57 @@ class Client:
     self.upload_queue.append((job, output))
     self.upload_queue_event.set()
     self.refresh_screen()
+
+  def fetch_grain_table(self, projectid, scene):
+    try:
+      r = self.session.get(f"{self.args.target}/api/get_grain/{projectid}/{scene}", timeout=3, stream=True)
+      if r.status_code != 200:
+        return None
+
+      return r
+    except:
+      return None
+
+  def fetch_new_job(self):
+    jobs = [{"projectid": worker.job.projectid, "scene": worker.job.scene} for worker in self.workers if worker.job is not None]
+    jobs.extend([{"projectid": up[0].projectid, "scene": up[0].scene} for up in self.upload_queue])
+    if self.uploading:
+      jobs.append({"projectid": self.uploading.projectid, "scene": self.uploading.scene})
+
+    jobs_str = json.dumps(jobs)
+    try:
+      r = self.session.get(f"{self.args.target}/api/get_job/{jobs_str}", timeout=3, stream=True)
+      if r.status_code != 200:
+        return None
+
+      job = Job(r)
+
+      if r.headers["version"] != encoder_versions[job.encoder]:
+        cancel_job(job)
+
+        if job.encoder == "aom":
+          if os.path.isfile("aomenc.exe"):
+            self.config["r"] = len(self.workers)
+            save_config(self.config)
+            os.remove("aomenc.exe")
+            self.stop(f"bad aom version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}\n\nRestart to re-download.")
+          else:
+            client.stop(f"bad aom version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}")
+
+        if job.encoder == "vpx":
+          if os.path.isfile("vpxenc.exe"):
+            self.config["r"] = len(self.workers)
+            save_config(self.config)
+            os.remove("vpxenc.exe")
+            self.stop(f"bad vpx version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}\n\nRestart to re-download.")
+          else:
+            self.stop(f"bad vpx version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}")
+
+        return None
+
+      return job
+    except:
+      return None
 
   def stop(self, message=""):
     self.stopping = True
@@ -418,10 +440,9 @@ class Client:
         elif menu_action == "quit":
           self.stop()
       elif c == KEY_R:
-        self.render_lock.acquire()
-        self.scr.clear()
-        self.scr.refresh()
-        self.render_lock.release()
+        with self.render_lock:
+          self.scr.clear()
+          self.scr.refresh()
 
       self.refresh_screen()
   
@@ -460,7 +481,7 @@ class Worker:
 
   def kill(self):
     self.stopped = True
-    if self.pipe:
+    if self.pipe and self.pipe.poll() is None:
       self.pipe.kill()
     
     if self.job:
@@ -501,7 +522,7 @@ class Worker:
       self.update_status("downloading")
 
       while True:
-        self.job = fetch_new_job(self.client)
+        self.job = self.client.fetch_new_job()
         if self.job: break
         for i in range(0, 15):
           self.client.worker_timer.clear()
@@ -528,9 +549,38 @@ class Worker:
             return
 
           if self.job.encoder in self.client.encode:
-            success, output = self.client.encode[self.job.encoder](self, file, self.job)
+            if self.job.grain:
+              attempts = 15
+              while attempts > 0:
+                grain_table = self.client.fetch_grain_table(self.job.projectid, self.job.scene)
+                if grain_table: break
+                self.client.worker_timer.clear()
+                self.client.worker_timer.wait(1)
+                self.client.worker_timer.clear()
+                attempt -= 1
+
+              if self.stopped:
+                return
+                
+              if grain_table:
+                try:
+                  with tmp_file(grain_table, f"{self.job.scene}.table", self) as grain_file:
+                    self.job.grain_file = grain_file
+                    success, output = self.client.encode[self.job.encoder](self, self.job, file)
+                except:
+                  success, output = False, None
+              else:
+                success, output = False, None
+
+            else:
+              success, output = self.client.encode[self.job.encoder](self, self.job, file)
           else:
             success, output = False, None
+
+          if self.pipe and self.pipe.poll() is None:
+            self.pipe.kill()
+
+          self.pipe = None
 
           if success:
             self.client.upload(self.job, output)

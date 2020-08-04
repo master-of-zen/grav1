@@ -19,16 +19,16 @@ app = Flask(__name__)
 @app.route("/scene/<projectid>/<scene>", methods=["GET"])
 @cross_origin()
 def get_scene(projectid, scene):
-  if projectid in projects:
-    return send_from_directory(projects[projectid].path_encode, scene)
-  return "", 404
+  if projectid not in projects:
+    return "", 404
+  return send_from_directory(projects[projectid].path_encode, scene)
 
 @app.route("/completed/<projectid>", methods=["GET"])
 @cross_origin()
 def get_completed(projectid):
-  if projectid in projects:
-    return send_file(projects[projectid].path_out)
-  return "", 404
+  if projectid not in projects:
+    return "", 404
+  return send_file(projects[projectid].path_out)
 
 @app.route("/api/get_project/<projectid>", methods=["GET"])
 @cross_origin()
@@ -74,6 +74,16 @@ def get_projects():
     rtn.append(p)
   return json.dumps(rtn)
 
+@app.route("/api/get_grain/<projectid>/<scene>", methods=["GET"])
+def get_grain(projectid, scene):
+  if projectid not in projects:
+    return "", 404
+
+  if not projects[projectid].grain:
+    return "", 404
+
+  return send_from_directory(projects[projectid].path_grain, f"{scene}.table")
+
 @app.route("/api/get_job/<jobs>", methods=["GET"])
 def get_job(jobs):
   jobs = json.loads(jobs)
@@ -100,6 +110,7 @@ def get_job(jobs):
   resp.headers["version"] = versions[new_job.encoder]
   resp.headers["start"] = new_job.start
   resp.headers["frames"] = new_job.frames
+  resp.headers["grain"] = int(new_job.grain)
   return resp
 
 @app.route("/cancel_job", methods=["POST"])
@@ -108,19 +119,20 @@ def cancel_job():
   projectid = str(request.form["projectid"])
   scene_number = str(request.form["scene"])
 
-  if projectid not in projects:
-    return "project not found", 404
+  with projects.projects_lock:
+    if projectid not in projects:
+      return "project not found", 404
 
-  project = projects[projectid]
+    project = projects[projectid]
 
-  if scene_number not in project.jobs:
-    return "job not found", 404
+    if scene_number not in project.jobs:
+      return "job not found", 404
 
-  job = project.jobs[scene_number]
+    job = project.jobs[scene_number]
 
-  if client in job.workers:
-    job.workers.remove(client)
-    logging.log(NET, "cancel", projectid, scene_number, "by", client)
+    if client in job.workers:
+      job.workers.remove(client)
+      logging.log(NET, "cancel", projectid, scene_number, "by", client)
 
   return "saved", 200
 
@@ -137,9 +149,10 @@ def receive():
   ffmpeg_params = request.form["ffmpeg_params"]
   projectid = str(request.form["projectid"])
   scene_number = str(request.form["scene"])
+  grain = int(request.form["grain"]) if "grain" in request.form else False
   file = request.files["file"]
 
-  return projects.check_job(projectid, client, encoder, encoder_params, ffmpeg_params, scene_number, file), 200
+  return projects.check_job(projectid, client, encoder, encoder_params, ffmpeg_params, scene_number, grain, file), 200
 
 @app.route("/api/list_directory", methods=["GET"])
 @cross_origin()

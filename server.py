@@ -77,32 +77,30 @@ def get_projects():
 @app.route("/api/get_job/<jobs>", methods=["GET"])
 def get_job(jobs):
   jobs = json.loads(jobs)
+  
+  ip_list = request.headers.getlist("X-Forwarded-For")
 
-  new_job = projects.get_job(jobs)
+  workerid = f"{ip_list[0] if ip_list else request.remote_addr}:{request.environ.get('REMOTE_PORT')}"
 
-  if new_job:
-    workerid = f"{request.environ['REMOTE_ADDR']}:{request.environ['REMOTE_PORT']}"
-    new_job.workers.append(workerid)
+  new_job = projects.get_job(jobs, workerid)
 
-    logging.log(NET, "sent", new_job.project.projectid, new_job.scene, "to", workerid, new_job.frames)
+  if not new_job:
+    return "", 404
 
-    resp = make_response(send_file(new_job.path))
-    resp.headers["success"] = "1"
-    resp.headers["projectid"] = new_job.project.projectid
-    resp.headers["filename"] = new_job.filename
-    resp.headers["scene"] = new_job.scene
-    resp.headers["id"] = workerid
-    resp.headers["encoder"] = new_job.encoder
-    resp.headers["encoder_params"] = new_job.encoder_params
-    resp.headers["ffmpeg_params"] = new_job.ffmpeg_params
-    resp.headers["version"] = versions[new_job.encoder]
-    resp.headers["start"] = new_job.start
-    resp.headers["frames"] = new_job.frames
-    return resp
-  else:
-    resp = make_response("")
-    resp.headers["success"] = "0"
-    return resp
+  logging.log(NET, "sent", new_job.project.projectid, new_job.scene, "to", workerid, new_job.frames)
+
+  resp = make_response(send_file(new_job.path))
+  resp.headers["projectid"] = new_job.project.projectid
+  resp.headers["filename"] = new_job.filename
+  resp.headers["scene"] = new_job.scene
+  resp.headers["id"] = workerid
+  resp.headers["encoder"] = new_job.encoder
+  resp.headers["encoder_params"] = new_job.encoder_params
+  resp.headers["ffmpeg_params"] = new_job.ffmpeg_params
+  resp.headers["version"] = versions[new_job.encoder]
+  resp.headers["start"] = new_job.start
+  resp.headers["frames"] = new_job.frames
+  return resp
 
 @app.route("/cancel_job", methods=["POST"])
 def cancel_job():

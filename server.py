@@ -84,6 +84,16 @@ def get_grain(projectid, scene):
 
   return send_from_directory(projects[projectid].path_grain, f"{scene}.table")
 
+@app.route("/api/is_job/<projectid>/<scene>", methods=["GET"])
+def is_job(projectid, scene):
+  if projectid not in projects:
+    return "", 404
+  
+  if scene not in projects[projectid].jobs:
+    return "", 404
+
+  return "", 200
+
 @app.route("/api/get_job/<jobs>", methods=["GET"])
 def get_job(jobs):
   jobs = json.loads(jobs)

@@ -2,7 +2,8 @@
 
 import os, subprocess, re, contextlib, requests, time, json, shutil
 from tempfile import NamedTemporaryFile
-from threading import Lock, RLock, Thread, Event
+from threading import Lock, RLock, Thread, Event, Condition
+from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 
 bytes_map = ["B", "K", "M", "G"]
@@ -29,30 +30,9 @@ def print_progress(n, total):
   fill = "█" * int((n / total) * 10)
   return "{:3.0f}%|{:{}s}| {}/{}".format(100 * n / total, fill, 10, n, total)
 
-@contextlib.contextmanager
-def tmp_file(stream, suffix, worker):
-  try:
-    file = NamedTemporaryFile(mode="wb", suffix=suffix, dir=".", delete=False)
-    tmp_name = file.name
-    downloaded = 0
-    total_size = int(stream.headers["content-length"])
-    for chunk in stream.iter_content(chunk_size=2**16):
-      if worker.stopped: break
-      if chunk:
-        downloaded = downloaded + len(chunk)
-        worker.update_status("downloading", print_progress_bytes(downloaded, total_size), progress=True)
-        file.write(chunk)
-    file.flush()
-    file.close()
-    yield tmp_name
-  except: pass
-  finally:
-    while os.path.exists(tmp_name):
-      try:
-        os.remove(tmp_name)
-      except: pass
+def aom_vpx_encode(encoder, encoder_path, worker, job):
+  worker.job_started = time.time()
 
-def aom_vpx_encode(encoder, encoder_path, worker, job, video):
   encoder_params = job.encoder_params
   ffmpeg_params = job.ffmpeg_params
 
@@ -69,12 +49,12 @@ def aom_vpx_encode(encoder, encoder_path, worker, job, video):
 
   vf = ",".join(vfs)
 
-  output_filename = f"{video}.ivf"
+  output_filename = f"{job.video}.ivf"
 
   ffmpeg = [
     worker.client.args.ffmpeg, "-y", "-hide_banner",
     "-loglevel", "error",
-    "-i", video,
+    "-i", job.video,
     "-strict", "-1",
     "-pix_fmt", "yuv420p",
     "-vf", vf,
@@ -86,7 +66,7 @@ def aom_vpx_encode(encoder, encoder_path, worker, job, video):
 
   ffmpeg.extend(["-f", "yuv4mpegpipe", "-"])
 
-  aom = [encoder_path, "-", "--ivf", f"--fpf={video}.log", f"--threads={args.threads}", "--passes=2"]
+  aom = [encoder_path, "-", "--ivf", f"--fpf={job.video}.log", f"--threads={args.threads}", "--passes=2"]
 
   passes = [
     aom + re.sub(r"--denoise-noise-level=[0-9]+", "", encoder_params).split(" ") + ["--pass=1", "-o", os.devnull],
@@ -94,10 +74,10 @@ def aom_vpx_encode(encoder, encoder_path, worker, job, video):
   ]
 
   if job.grain:
-    if not job.grain_file:
+    if not job.has_grain:
       return False, None
     else:
-      passes[1].append(f"--film-grain-table={job.grain_file}")
+      passes[1].append(f"--film-grain-table={job.grain}")
 
   total_frames = int(job.frames)
 
@@ -124,8 +104,11 @@ def aom_vpx_encode(encoder, encoder_path, worker, job, video):
 
       match = re.search(r"frame.*?\/([^ ]+?) ", line)
       if match:
-        worker.progress = (pass_n, int(match.group(1)))
-        worker.update_status(f"{encoder:.3s}", "pass:", pass_n, print_progress(int(match.group(1)), total_frames), progress=True)
+        frames = int(match.group(1))
+        worker.progress = (pass_n, frames)
+        if pass_n == 2:
+          worker.update_fps(frames)
+        worker.update_status(f"{encoder:.3s}", "pass:", pass_n, print_progress(frames, total_frames), progress=True)
 
     if ffmpeg_pipe.poll() is None:
       ffmpeg_pipe.kill()
@@ -133,72 +116,47 @@ def aom_vpx_encode(encoder, encoder_path, worker, job, video):
     if worker.pipe.returncode != 0:
       success = False
 
-  if os.path.isfile(f"{video}.log"):
-    os.remove(f"{video}.log")
+  if os.path.isfile(f"{job.video}.log"):
+    os.remove(f"{job.video}.log")
 
   return success, output_filename
 
-def cancel_job(job):
-  try:
-    client.session.post(
-      f"{client.args.target}/cancel_job",
-      data={
-        "client": job.id,
-        "scene": job.scene,
-        "projectid": job.projectid
-      }
-    )
-  except: pass
-
-def upload(client, job, output):
-  file = open(output, "rb")
-  files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
-  try:
-    if client.args.noui:
-      print("uploading to", f"{client.args.target}/finish_job")
-    r = client.session.post(
-      f"{client.args.target}/finish_job",
-      data={
-        "client": job.id,
-        "scene": job.scene,
-        "projectid": job.projectid,
-        "encoder": job.encoder,
-        "version": encoder_versions[job.encoder],
-        "encoder_params": job.encoder_params,
-        "ffmpeg_params": job.ffmpeg_params,
-        "grain": int(len(job.grain_file) > 0)
-      },
-      files=files)
-    return r
-  except:
-    return False
-  finally:
-    file.close()
-
 class Job:
-  def __init__(self, r):
+  def __init__(self, r, video, grain=""):
     self.id = r.headers["id"]
     self.filename = r.headers["filename"]
+    self.projectid = r.headers["projectid"]
     self.scene = r.headers["scene"]
     self.encoder = r.headers["encoder"]
     self.encoder_params = r.headers["encoder_params"]
     self.ffmpeg_params = r.headers["ffmpeg_params"]
-    self.projectid = r.headers["projectid"]
     self.frames = r.headers["frames"]
     self.start = r.headers["start"]
     self.request = r
-    self.grain = int(r.headers["grain"]) if "grain" in r.headers else None
-    self.grain_file = ""
+    self.has_grain = int(r.headers["grain"]) if "grain" in r.headers else None
+    self.video = video
+    self.grain = grain
+
+  def dispose(self):
+    if self.video and os.path.exists(self.video):
+      try:
+        os.remove(self.video)
+      except: pass
+    
+    if self.grain and os.path.exists(self.grain):
+      try:
+        os.remove(self.grain)
+      except: pass
 
 class Client:
-  def __init__(self, config, args):
+  def __init__(self, config, encoder_versions, args):
     self.config = config
+    self.encoder_versions = encoder_versions
     self.args = args
     self.workers = []
     self.numworkers = int(args.workers)
     self.completed = 0
     self.failed = 0
-    self.lock = Lock()
     self.session = requests.Session()
     self.scr = None
     self.render_lock = RLock()
@@ -213,24 +171,113 @@ class Client:
     self.refresh = Event()
     self.screen_thread.start()
 
-    self.worker_timer = Event()
-
     self.stopping = False
     self.exit_event = Event()
     self.exit_message = None
 
     self.encode = {
-      "aom": lambda worker, job, video: aom_vpx_encode("aom", args.aomenc, worker, job, video),
-      "vpx": lambda worker, job, video: aom_vpx_encode("vpx", args.vpxenc, worker, job, video)
+      "aom": lambda worker, job: aom_vpx_encode("aom", args.aomenc, worker, job),
+      "vpx": lambda worker, job: aom_vpx_encode("vpx", args.vpxenc, worker, job)
     }
-
-    self.download_lock = Lock()
 
     self.upload_queue = deque()
     self.upload_queue_event = Event()
-    self.upload_loop = Thread(target=self._upload_loop, daemon=True)
-    self.upload_loop.start()
     self.uploading = None
+    Thread(target=self._upload_loop, daemon=True).start()
+
+    self.job_queue_size = int(args.queue)
+    self.job_queue = deque()
+    self.job_queue_lock = Lock()
+    self.job_queue_not_empty = Condition(self.job_queue_lock)
+
+    self.download_status = ""
+    self.download_timer = Event()
+    self.download_lock = Lock()
+    self.download_event = Event()
+    
+    self.download_executor = ThreadPoolExecutor(max_workers=1)
+
+    Thread(target=self._download_loop, daemon=True).start()
+
+  def _update_download_status(self, downloaded, total_size):
+    self.download_status = print_progress_bytes(downloaded, total_size)
+    self.refresh_screen()
+
+  def _download_loop(self):
+    while True:
+      if len(self.job_queue) < self.job_queue_size:
+        job = self.download_job()
+        if job:
+          self._add_job_to_queue(job)
+          self.refresh_screen()
+      else:
+        self.download_status = ""
+        self.download_event.wait()
+        self.download_event.clear()
+      if self.stopping: return
+
+  def _add_job_to_queue(self, job):
+    with self.job_queue_not_empty:
+      self.job_queue.append(job)
+      self.job_queue_not_empty.notify()
+
+  def download_job(self):
+    job = self.fetch_new_job(self._update_download_status)
+    if job:
+      return job
+    for i in range(15):
+      if self.stopping: return None
+      self.download_status = f"waiting...{15-i:2d}"
+      self.refresh_screen()
+      self.download_timer.wait(1)
+      self.download_timer.clear()
+    return None
+
+  def download(self, stream, suffix, cb, worker=None):
+    file = ""
+    try:
+      file = NamedTemporaryFile(mode="wb", suffix=suffix, dir=".", delete=False)
+      downloaded = 0
+      total_size = int(stream.headers["content-length"])
+      for chunk in stream.iter_content(chunk_size=2**16):
+        if self.stopping or (worker and worker.stopped):
+          if file and file.name:
+            os.remove(file.name)
+          return None
+        if chunk:
+          downloaded += len(chunk)
+          cb(downloaded, total_size)
+          file.write(chunk)
+      file.flush()
+      file.close()
+      return file.name
+    except:
+      if file and file.name:
+        os.remove(file.name)
+      return None
+
+  def get_job(self, worker, update_status):
+    if self.job_queue_size > 0:
+      return self._get_job_from_queue(worker), True
+    else:
+      return self._get_job(worker, update_status), False
+    
+  def _get_job(self, worker, update_status):
+    worker.future = self.download_executor.submit(self.fetch_new_job, update_status, worker)
+    try:
+      return worker.future.result()
+    except:
+      return None
+
+  def _get_job_from_queue(self, worker):
+    with self.job_queue_not_empty:
+      while len(self.job_queue) == 0:
+        self.job_queue_not_empty.wait()
+        if worker.stopped: return None
+      
+      job = self.job_queue.popleft()
+      self.download_event.set()
+      return job
 
   def _upload_loop(self):
     while True:
@@ -244,7 +291,7 @@ class Client:
 
       uploads = 3
       while True:
-        r = upload(self, job, output)
+        r = self._upload(job, output)
         
         if r:
           if r.text == "saved":
@@ -259,19 +306,16 @@ class Client:
             if self.args.noui:
               print("failed", r.status_code, r.text, job.projectid, job.scene)
             self.failed += 1
-            if self.args.noui:
-              print("error", r.status_code)
             break
         else:
           if self.args.noui:
             print("unable to connect, trying again")
           time.sleep(1)
       
-      while os.path.isfile(output):
+      if os.path.exists(output):
         try:
           os.remove(output)
-        except:
-          time.sleep(1)
+        except: pass
 
       self.uploading = None
       self.refresh_screen()
@@ -281,21 +325,47 @@ class Client:
     self.upload_queue_event.set()
     self.refresh_screen()
 
-  def fetch_grain_table(self, projectid, scene):
+  def _upload(self, job, output):
+    file = open(output, "rb")
+    files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
     try:
-      r = self.session.get(f"{self.args.target}/api/get_grain/{projectid}/{scene}", timeout=3, stream=True)
-      if r.status_code != 200:
-        return None
-
-      return r
+      if self.args.noui:
+        print("uploading to", f"{self.args.target}/finish_job")
+      return self.session.post(
+        f"{self.args.target}/finish_job",
+        data={
+          "client": job.id,
+          "scene": job.scene,
+          "projectid": job.projectid,
+          "encoder": job.encoder,
+          "version": encoder_versions[job.encoder],
+          "encoder_params": job.encoder_params,
+          "ffmpeg_params": job.ffmpeg_params,
+          "grain": int(len(job.grain) > 0)
+        },
+        files=files)
     except:
       return None
+    finally:
+      file.close()
 
-  def fetch_new_job(self):
-    jobs = [{"projectid": worker.job.projectid, "scene": worker.job.scene} for worker in self.workers if worker.job is not None]
-    jobs.extend([{"projectid": up[0].projectid, "scene": up[0].scene} for up in self.upload_queue])
+  def fetch_grain_table(self, projectid, scene):
+    for i in range(3):
+      try:
+        r = self.session.get(f"{self.args.target}/api/get_grain/{projectid}/{scene}", timeout=3, stream=True)
+        if r.status_code == 200:
+          return r
+      except: pass
+    return None
+
+  def fetch_new_job(self, cb, worker=None):
+    jobs = [worker.job for worker in self.workers if worker.job is not None]
+    jobs.extend(self.job_queue)
+    jobs.extend([up[0] for up in self.upload_queue])
     if self.uploading:
-      jobs.append({"projectid": self.uploading.projectid, "scene": self.uploading.scene})
+      jobs.append(self.uploading)
+
+    jobs = [{"projectid": job.projectid, "scene": job.scene} for job in jobs]
 
     jobs_str = json.dumps(jobs)
     try:
@@ -303,40 +373,75 @@ class Client:
       if r.status_code != 200:
         return None
 
-      job = Job(r)
-
-      if r.headers["version"] != encoder_versions[job.encoder]:
-        cancel_job(job)
-
-        if job.encoder == "aom":
+      encoder = r.headers["encoder"]
+      if self.encoder_versions[encoder] != r.headers["version"]:
+        self._cancel_job(r.headers["id"], r.headers["projectid"], r.headers["scene"])
+        if encoder == "aom":
           if os.path.isfile("aomenc.exe"):
             self.config["r"] = len(self.workers)
             save_config(self.config)
             os.remove("aomenc.exe")
-            self.stop(f"bad aom version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}\n\nRestart to re-download.")
+            self.stop(f"bad aom version. have: {encoder_versions[encoder]} required: {r.headers['version']}\n\nRestart to re-download.")
           else:
-            client.stop(f"bad aom version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}")
+            self.stop(f"bad aom version. have: {encoder_versions[encoder]} required: {r.headers['version']}")
 
-        if job.encoder == "vpx":
+        if encoder == "vpx":
           if os.path.isfile("vpxenc.exe"):
             self.config["r"] = len(self.workers)
             save_config(self.config)
             os.remove("vpxenc.exe")
-            self.stop(f"bad vpx version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}\n\nRestart to re-download.")
+            self.stop(f"bad vpx version. have: {encoder_versions[encoder]} required: {r.headers['version']}\n\nRestart to re-download.")
           else:
-            self.stop(f"bad vpx version. have: {encoder_versions[job.encoder]} required: {r.headers['version']}")
+            self.stop(f"bad vpx version. have: {encoder_versions[encoder]} required: {r.headers['version']}")
 
         return None
 
-      return job
+      video_file = self.download(r, r.headers["filename"], cb, worker)
+      if not video_file:
+        return None
+
+      if "grain" in r.headers and int(r.headers["grain"]):
+        if grain_r:
+          grain_file = self.download(grain_r, r.headers["filename"] + ".table", cb, worker)
+          if grain_file:
+            return Job(r, video_file, grain_file)
+        try:
+          os.remove(video_file)
+        except: pass
+        return None
+
+      return Job(r, video_file)
     except:
       return None
 
+  def _cancel_job(self, id, scene, projectid):
+    try:
+      self.session.post(
+        f"{self.args.target}/cancel_job",
+        data={
+          "client": id,
+          "scene": scene,
+          "projectid": projectid
+        }
+      )
+    except: pass
+
+  def cancel_job(self, job):
+    self._cancel_job(job.id, job.scene, job.projectid)
+
   def stop(self, message=""):
     self.stopping = True
+    self.download_timer.set()
+
     for worker in self.workers:
       worker.kill()
+      with self.job_queue_not_empty:
+        self.job_queue_not_empty.notify_all()
     
+    for job in self.job_queue:
+      self.cancel_job(job)
+      job.dispose()
+
     self.exit_event.set()
     self.exit_message = message
 
@@ -348,9 +453,6 @@ class Client:
   def remove_worker(self, worker):
     if worker in self.workers:
       self.workers.remove(worker)
-
-  def _refresh_screen(self):
-    self.header.set_text(f"workers: {self.numworkers} hit: {self.completed} miss: {self.failed}")
 
   def screen(self):
     while self.refresh.wait():
@@ -364,21 +466,26 @@ class Client:
       n_uploading = len(self.upload_queue) + 1 if self.uploading else 0
       footer = " ".join([f"[{item}]" if i == self.menu.selected_item else f" {item} " for i, item in enumerate(self.menu.items)])
 
+      cfps = round(sum(worker.fps for worker in self.workers), 2)
       self.scr.erase()
 
       (mlines, mcols) = self.scr.getmaxyx()
 
       header = []
       for line in textwrap.wrap(f"workers: {self.numworkers} active: {n_active} uploading: {n_uploading} "
-        f"hit: {self.completed} miss: {self.failed}", width=mcols):
+        f"hit: {self.completed} miss: {self.failed} cfps: {cfps}", width=mcols):
         header.append(line)
 
       body_y = len(header)
-      window_size = mlines - body_y - 1
+      window_size = mlines - body_y - 1 - (1 if self.job_queue_size > 0 else 0)
       self.menu.scroll = max(min(self.menu.scroll, len(self.workers) - window_size), 0)
 
       for i, line in enumerate(header):
         self.scr.insstr(i, 0, line.ljust(mcols), curses.color_pair(1))
+
+      if self.job_queue_size > 0:
+        self.scr.insstr(body_y, 0, f"queue: {len(self.job_queue)} {self.download_status}")
+        body_y += 1
 
       for i, line in enumerate(msg[self.menu.scroll:window_size + self.menu.scroll], start=body_y):
         self.scr.insstr(i, 0, line)
@@ -416,26 +523,23 @@ class Client:
 
         elif menu_action == "remove":
           self.numworkers = max(self.numworkers - 1, 0)
-          if self.lock.locked() and any(worker for worker in self.workers if worker.job is None and not worker.lock_acquired):
-            self.lock.release()
-          elif any(worker for worker in self.workers if worker.lock_acquired):
-            self.worker_timer.set()
+          jobless_workers = [worker for worker in self.workers if not worker.job if not worker.future or not worker.future.running()]
+          if jobless_workers:
+            jobless_workers[0].kill()
+            with self.job_queue_not_empty:
+              self.job_queue_not_empty.notify_all()
 
         elif menu_action == "kill":
-          if len(self.workers) == self.numworkers or any(worker for worker in self.workers if worker.job is None):
-            self.numworkers = max(self.numworkers - 1, 0)
+          self.numworkers = max(self.numworkers - 1, 0)
+          
+          sorted_workers = sorted([worker for worker in self.workers if not worker.stopped], key=lambda x: (1 if x.pipe else 0, x.progress, 1 if x.job else 0, 1 if x.future and x.future.running() else 0))
+          if len(sorted_workers) > 0:
+            sorted_workers[0].status = "killing"
+            sorted_workers[0].kill()
+            with self.job_queue_not_empty:
+              self.job_queue_not_empty.notify_all()
 
-          if self.lock.locked() and any(worker for worker in self.workers if worker.job is None and not worker.lock_acquired):
-            self.lock.release()
-          elif any(worker for worker in self.workers if worker.lock_acquired):
-            self.worker_timer.set()
-          else:
-            sorted_workers = sorted([worker for worker in self.workers if not worker.stopped], key= lambda x: (1 if x.pipe else 0, x.progress, x.lock_acquired, 1 if x.job else None))
-            if len(sorted_workers) > 0:
-              sorted_workers[0].status = "killing"
-              sorted_workers[0].kill()
-                
-              self.remove_worker(sorted_workers[0])
+            self.remove_worker(sorted_workers[0])
           
         elif menu_action == "quit":
           self.stop()
@@ -471,7 +575,6 @@ class Worker:
   def __init__(self, client):
     self.status = ""
     self.client = client
-    self.lock_acquired = False
     self.thread = None
     self.job = None
     self.pipe = None
@@ -479,13 +582,23 @@ class Worker:
     self.progress = (0, 0)
     self.id = 0
 
+    self.job_started = 0
+    self.fps = 0
+
+    self.future = None
+
   def kill(self):
     self.stopped = True
+
+    if self.future and not self.future.running():
+      self.future.cancel()
+
     if self.pipe and self.pipe.poll() is None:
       self.pipe.kill()
     
     if self.job:
-      cancel_job(self.job)
+      self.client.cancel_job(self.job)
+      self.job.dispose()
 
   def start(self):
     self.thread = Thread(target=lambda: self.work(), daemon=True)
@@ -500,102 +613,68 @@ class Worker:
       self.status = message
       self.client.refresh_screen()
 
+  def update_status_download(self, downloaded, total_size):
+    self.update_status("downloading", print_progress_bytes(downloaded, total_size), progress=True)
+
+  def update_fps(self, frames):
+    elapsed = time.time() - self.job_started
+    self.fps = frames / elapsed
+
+  def check_job(self):
+    for _i in range(3):
+      try:
+        r = self.client.session.get(f"{self.client.args.target}/api/is_job/{self.job.projectid}/{self.job.scene}", timeout=3)
+        if r.status_code == 200:
+          return True
+        break
+      except:
+        time.sleep(1)
+
+    self.job.dispose()
+    self.job = None
+    return False
+
   def work(self):
     while True:
       self.update_status("waiting", progress=True)
 
-      self.client.lock.acquire()
-      self.lock_acquired = True
-
       if len(self.client.workers) > self.client.numworkers or self.stopped:
-        if self.client.lock.locked():
-          self.client.lock.release()
         self.client.remove_worker(self)
         return
 
-      if self.client.download_lock.locked():
-        self.client.lock.release()
-        self.lock_acquired = False
+      self.job, from_queue = self.client.get_job(self, self.update_status_download)
+
+      if self.stopped:
+        if self.job:
+          self.job.dispose()
+        self.client.remove_worker(self)
+        return
+
+      if not self.job:
         continue
 
-      self.client.download_lock.acquire()
-      self.update_status("downloading")
+      if from_queue:
+        self.update_status("checking job")
+        if not self.check_job():
+          continue
 
-      while True:
-        self.job = self.client.fetch_new_job()
-        if self.job: break
-        for i in range(0, 15):
-          self.client.worker_timer.clear()
-          if len(self.client.workers) > self.client.numworkers or self.stopped:
-            if self.client.lock.locked():
-              self.client.lock.release()
-            self.client.download_lock.release()
-            self.client.remove_worker(self)
-            return
-          self.update_status(f"waiting...{15-i:2d}")
-          self.client.worker_timer.wait(1)
-          self.client.worker_timer.clear()
-
-      self.update_status("received", self.job.projectid, self.job.scene)
-      
       try:
-        with tmp_file(self.job.request, self.job.filename, self) as file:
-          if self.client.lock.locked():
-            self.client.lock.release()
-          self.client.download_lock.release()
-          self.lock_acquired = False
+        success, output = self.client.encode[self.job.encoder](self, self.job)
+        if self.pipe and self.pipe.poll() is None:
+          self.pipe.kill()
 
-          if self.stopped:
-            return
+        self.pipe = None
 
-          if self.job.encoder in self.client.encode:
-            if self.job.grain:
-              attempts = 15
-              while attempts > 0:
-                grain_table = self.client.fetch_grain_table(self.job.projectid, self.job.scene)
-                if grain_table: break
-                self.client.worker_timer.clear()
-                self.client.worker_timer.wait(1)
-                self.client.worker_timer.clear()
-                attempt -= 1
-
-              if self.stopped:
-                return
-                
-              if grain_table:
-                try:
-                  with tmp_file(grain_table, f"{self.job.scene}.table", self) as grain_file:
-                    self.job.grain_file = grain_file
-                    success, output = self.client.encode[self.job.encoder](self, self.job, file)
-                except:
-                  success, output = False, None
-              else:
-                success, output = False, None
-
-            else:
-              success, output = self.client.encode[self.job.encoder](self, self.job, file)
-          else:
-            success, output = False, None
-
-          if self.pipe and self.pipe.poll() is None:
-            self.pipe.kill()
-
-          self.pipe = None
-
-          if success:
-            self.client.upload(self.job, output)
-            self.job = None
-          elif output:
-            while os.path.exists(output):
-              try:
-                os.remove(output)
-              except: pass
-
-      except: pass  
-
-      if self.lock_acquired:
-        self.client.lock.release()
-        self.client.download_lock.release()
+        if success:
+          self.client.upload(self.job, output)
+          self.job.dispose()
+          self.job = None
+        elif output:
+          if os.path.exists(output):
+            try:
+              os.remove(output)
+            except: pass
+      except: pass
 
     self.client.remove_worker(self)
 
@@ -639,6 +718,7 @@ if __name__ == "__main__":
   parser.add_argument("--aomenc", default="aomenc", help="path to aomenc")
   parser.add_argument("--vpxenc", default="vpxenc", help="path to vpxenc")
   parser.add_argument("--ffmpeg", default="ffmpeg", help="path to ffmpeg")
+  parser.add_argument("--queue", default=0)
 
   args = parser.parse_args()
 
@@ -678,7 +758,7 @@ if __name__ == "__main__":
   else:
     config = {}
 
-  client = Client(config, args)
+  client = Client(config, encoder_versions, args)
 
   if args.workers == 1 and "r" in config:
     n_workers = config["r"]

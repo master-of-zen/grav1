@@ -82,6 +82,11 @@ def get_grain(projectid, scene):
   if not projects[projectid].grain:
     return "", 404
 
+  ip_list = request.headers.getlist("X-Forwarded-For")
+  sender = ip_list[0] if ip_list else request.remote_addr
+
+  logging.log(NET, "grain", projectid, scene, "to", sender)
+
   return send_from_directory(projects[projectid].path_grain, f"{scene}.table")
 
 @app.route("/api/is_job/<projectid>/<scene>", methods=["GET"])

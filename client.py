@@ -401,7 +401,8 @@ class Client:
         return None
 
       if "grain" in r.headers and int(r.headers["grain"]):
-        if grain_r:
+        grain_r = self.session.get(f"{self.args.target}/api/get_grain/{r.headers['projectid']}/{r.headers['scene']}", timeout=3, stream=True)
+        if grain_r and grain_r.status_code == 200:
           grain_file = self.download(grain_r, r.headers["filename"] + ".table", cb, worker)
           if grain_file:
             return Job(r, video_file, grain_file)

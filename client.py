@@ -154,6 +154,7 @@ class Client:
     self.encoder_versions = encoder_versions
     self.args = args
     self.workers = []
+    self.workers_lock = Lock()
     self.numworkers = int(args.workers)
     self.completed = 0
     self.failed = 0
@@ -199,8 +200,8 @@ class Client:
 
     Thread(target=self._download_loop, daemon=True).start()
 
-  def _update_download_status(self, downloaded, total_size):
-    self.download_status = print_progress_bytes(downloaded, total_size)
+  def _update_download_status(self, *argv, progress=False):
+    self.download_status = " ".join([str(arg) for arg in argv])
     self.refresh_screen()
 
   def _download_loop(self):
@@ -227,8 +228,7 @@ class Client:
       return job
     for i in range(15):
       if self.stopping: return None
-      self.download_status = f"waiting...{15-i:2d}"
-      self.refresh_screen()
+      self._update_download_status(f"waiting...{15-i:2d}")
       self.download_timer.wait(1)
       self.download_timer.clear()
     return None
@@ -246,7 +246,7 @@ class Client:
           return None
         if chunk:
           downloaded += len(chunk)
-          cb(downloaded, total_size)
+          cb("downloading", print_progress_bytes(downloaded, total_size), progress=True)
           file.write(chunk)
       file.flush()
       file.close()
@@ -260,7 +260,15 @@ class Client:
     if self.job_queue_size > 0:
       return self._get_job_from_queue(worker), True
     else:
-      return self._get_job(worker, update_status), False
+      job = self._get_job(worker, update_status)
+      if job:
+        return job, False
+      for i in range(15):
+        if self.stopping: return None
+        update_status(f"waiting...{15-i:2d}")
+        self.download_timer.wait(1)
+        self.download_timer.clear()
+      return None, False
     
   def _get_job(self, worker, update_status):
     worker.future = self.download_executor.submit(self.fetch_new_job, update_status, worker)
@@ -454,6 +462,7 @@ class Client:
   def remove_worker(self, worker):
     if worker in self.workers:
       self.workers.remove(worker)
+      self.refresh_screen()
 
   def screen(self):
     while self.refresh.wait():
@@ -518,29 +527,37 @@ class Client:
 
         if menu_action == "add":
           self.numworkers += 1
-          while len(self.workers) < self.numworkers:
-            new_worker = Worker(self)
-            self.add_worker(new_worker)
+          with self.workers_lock:
+            while len(self.workers) < self.numworkers:
+              new_worker = Worker(self)
+              self.add_worker(new_worker)
 
         elif menu_action == "remove":
           self.numworkers = max(self.numworkers - 1, 0)
-          jobless_workers = [worker for worker in self.workers if not worker.job if not worker.future or not worker.future.running()]
-          if jobless_workers:
-            jobless_workers[0].kill()
-            with self.job_queue_not_empty:
-              self.job_queue_not_empty.notify_all()
+          
+          with self.workers_lock:
+            jobless_workers = [worker for worker in self.workers if not worker.job if not worker.future or not worker.future.running()]
+            if jobless_workers:
+              jobless_workers[0].kill()
+              with self.job_queue_not_empty:
+                self.job_queue_not_empty.notify_all()
 
         elif menu_action == "kill":
           self.numworkers = max(self.numworkers - 1, 0)
           
-          sorted_workers = sorted([worker for worker in self.workers if not worker.stopped], key=lambda x: (1 if x.pipe else 0, x.progress, 1 if x.job else 0, 1 if x.future and x.future.running() else 0))
-          if len(sorted_workers) > 0:
-            sorted_workers[0].status = "killing"
-            sorted_workers[0].kill()
-            with self.job_queue_not_empty:
-              self.job_queue_not_empty.notify_all()
+          with self.workers_lock:
+            sorted_workers = sorted(
+              [worker for worker in self.workers if not worker.stopped],
+              key=lambda x: (1 if x.pipe else 0, x.progress, 1 if x.job else 0, 1 if x.future and x.future.running() else 0)
+            )
+            
+            if len(sorted_workers) > 0:
+              sorted_workers[0].status = "killing"
+              sorted_workers[0].kill()
+              with self.job_queue_not_empty:
+                self.job_queue_not_empty.notify_all()
 
-            self.remove_worker(sorted_workers[0])
+              self.remove_worker(sorted_workers[0])
           
         elif menu_action == "quit":
           self.stop()
@@ -614,9 +631,6 @@ class Worker:
       self.status = message
       self.client.refresh_screen()
 
-  def update_status_download(self, downloaded, total_size):
-    self.update_status("downloading", print_progress_bytes(downloaded, total_size), progress=True)
-
   def update_fps(self, frames):
     elapsed = time.time() - self.job_started
     self.fps = frames / elapsed
@@ -639,11 +653,12 @@ class Worker:
     while True:
       self.update_status("waiting", progress=True)
 
-      if len(self.client.workers) > self.client.numworkers or self.stopped:
-        self.client.remove_worker(self)
-        return
+      with self.client.workers_lock:
+        if len(self.client.workers) > self.client.numworkers or self.stopped:
+          self.client.remove_worker(self)
+          return
 
-      self.job, from_queue = self.client.get_job(self, self.update_status_download)
+      self.job, from_queue = self.client.get_job(self, self.update_status)
 
       if self.stopped:
         if self.job:

@@ -11,7 +11,17 @@ message me on the av1 discord if you're actually going to use this
 
 <img src="https://github.com/wwww-wwww/grav1/raw/master/images/website.png" width="600">
 
-### Latest significant changes:
+### Changes
+2020.08.11
+- client now has a download queue
+  - --queue \<size\>
+  - unspecified or size 0 disables the queue
+- modify grain: true in projects.json to enable grain tables
+  - grain table for each segment must be in jobs/\<projectid\>/grain
+  - splits must only be 1 segment
+    - will add an option to force a re-encode in the future
+
+2020.07.23
 - split algorithm is updated [here](https://github.com/wwww-wwww/grav1ty) first
 - scene information is stored individually for each project
 
@@ -55,6 +65,8 @@ start webserver (default port: 7899)
 
 starting up a worker  
 `python grav1c.py http://target --workers 4`  
+`python grav1c.py http://target --workers 2 --threads 4`  
+`python grav1c.py http://target --workers 4 --queue 3`  
 
 access the server through the [web client](https://encode.grass.moe) (incomplete)
 

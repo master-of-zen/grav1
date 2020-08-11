@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 
-import subprocess
-
-import os, re, json, shutil, logging
+import os, re, json, shutil, logging, subprocess, traceback
 from threading import Thread, Event
 
 from logger import NET
@@ -219,65 +217,68 @@ def modify_project(projectid):
 @app.route("/api/add_project", methods=["POST"])
 @cross_origin()
 def add_project():
-  content = request.json
-  if password and ("password" not in content or content["password"] != password):
-    logging.log(NET, "Bad password.")
-    return json.dumps({"success": False, "reason": "Bad password."})
+  try:
+    content = request.json
+    if password and ("password" not in content or content["password"] != password):
+      logging.log(NET, "Bad password.")
+      return json.dumps({"success": False, "reason": "Bad password."})
 
-  missing_fields = ",".join([key for key in ["input", "encoder", "encoder_params"] if key not in content])
-  if missing_fields:
-    return json.dumps({"success": False, "reason": f"Missing fields {missing_fields}"})
+    missing_fields = ",".join([key for key in ["input", "encoder", "encoder_params"] if key not in content])
+    if missing_fields:
+      return json.dumps({"success": False, "reason": f"Missing fields {missing_fields}"})
 
-  if not (isinstance(content["min_frames"], int) and \
-    isinstance(content["max_frames"], int)):
-    return json.dumps({
-      "success": False,
-      "reason": "min_frames and max_frames must be of type integer"
-    })
+    if not (isinstance(content["min_frames"], int) and \
+      isinstance(content["max_frames"], int)):
+      return json.dumps({
+        "success": False,
+        "reason": "min_frames and max_frames must be of type integer"
+      })
 
-  if not isinstance(content["priority"], (int, float)):
-    return json.dumps({
-      "success": False,
-      "reason": "priority must be a number"
-    })
-  
-  if not content["input"]:
-    return json.dumps({"success": False, "reason": "input is empty"})
+    if not isinstance(content["priority"], (int, float)):
+      return json.dumps({
+        "success": False,
+        "reason": "priority must be a number"
+      })
+    
+    if not content["input"]:
+      return json.dumps({"success": False, "reason": "input is empty"})
 
-  missing_files = ",".join([f for f in content["input"] if not os.path.isfile(f)])
-  if missing_files:
-    return json.dumps({"success": False, "reason": f"Input files not found: {missing_files}"})
-  
-  if "id" in content and content["id"]:
-    if len(content["input"] > 1):
-      existing_projects = ",".join(f"{content['id']}{i + 1:02d}" for i in range(content["input"]) if f"{content['id']}{i + 1:02d}" in projects)
-      if existing_projects:
-        return json.dumps({"success": False, "reason": f"Project with ids {existing_projects} already exist"})
-    else:
-      if content["id"] in projects:
-        return json.dumps({"success": False, "reason": f"Project with id {content['id']} already exist"})
-  
-  for i, input_file in enumerate(content["input"], 1):
-    logging.log(NET, "add project", input_file)
-
+    missing_files = ",".join([f for f in content["input"] if not os.path.isfile(f)])
+    if missing_files:
+      return json.dumps({"success": False, "reason": f"Input files not found: {missing_files}"})
+    
     if "id" in content and content["id"]:
-      id = f"{content['id']}{i:02d}"
-    else:
-      id = 0
+      if len(content["input"]) > 1:
+        existing_projects = ",".join(f"{content['id']}{i + 1:02d}" for i in range(content["input"]) if f"{content['id']}{i + 1:02d}" in projects)
+        if existing_projects:
+          return json.dumps({"success": False, "reason": f"Project with ids {existing_projects} already exist"})
+      else:
+        if content["id"] in projects:
+          return json.dumps({"success": False, "reason": f"Project with id {content['id']} already exist"})
+    
+    for i, input_file in enumerate(content["input"], 1):
+      logging.log(NET, "add project", input_file)
 
-    projects.add(Project(
-      input_file,
-      projects.path_jobs, 
-      content["encoder"],
-      content["encoder_params"],
-      ffmpeg_params=content["ffmpeg_params"] if "ffmpeg_params" in content else "",
-      min_frames=content["min_frames"] if "min_frames" in content else -1,
-      max_frames=content["max_frames"] if "max_frames" in content else -1,
-      priority=content["priority"] if "priority" in content else 0,
-      id=id
-    ), content["on_complete"] if "on_complete" in content else "")
+      if "id" in content and content["id"]:
+        id = f"{content['id']}{i:02d}"
+      else:
+        id = 0
 
-  return json.dumps({"success": True})
+      projects.add(Project(
+        input_file,
+        projects.path_jobs, 
+        content["encoder"],
+        content["encoder_params"],
+        ffmpeg_params=content["ffmpeg_params"] if "ffmpeg_params" in content else "",
+        min_frames=content["min_frames"] if "min_frames" in content else -1,
+        max_frames=content["max_frames"] if "max_frames" in content else -1,
+        priority=content["priority"] if "priority" in content else 0,
+        id=id
+      ), content["on_complete"] if "on_complete" in content else "")
+
+    return json.dumps({"success": True})
+  except Exception as e:
+    return json.dumps({"success": False, "reason": traceback.format_exc()})
 
 @app.route("/api/get_home", methods=["GET"])
 @cross_origin()

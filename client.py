@@ -207,7 +207,7 @@ class Client:
   def _download_loop(self):
     while True:
       if len(self.job_queue) < self.job_queue_size:
-        job = self.download_job()
+        job = self.download_job(self._update_download_status)
         if job:
           self._add_job_to_queue(job)
           self.refresh_screen()
@@ -222,13 +222,13 @@ class Client:
       self.job_queue.append(job)
       self.job_queue_not_empty.notify()
 
-  def download_job(self):
-    job = self.fetch_new_job(self._update_download_status)
+  def download_job(self, update_status, worker=None):
+    job = self.fetch_new_job(update_status, worker)
     if job:
       return job
     for i in range(15):
-      if self.stopping: return None
-      self._update_download_status(f"waiting...{15-i:2d}")
+      if self.stopping or worker and worker.stopped: return None
+      update_status(f"waiting...{15-i:2d}")
       self.download_timer.wait(1)
       self.download_timer.clear()
     return None
@@ -260,18 +260,10 @@ class Client:
     if self.job_queue_size > 0:
       return self._get_job_from_queue(worker), True
     else:
-      job = self._get_job(worker, update_status)
-      if job:
-        return job, False
-      for i in range(15):
-        if self.stopping: return None
-        update_status(f"waiting...{15-i:2d}")
-        self.download_timer.wait(1)
-        self.download_timer.clear()
-      return None, False
+      return self._get_job(worker, update_status), False
     
   def _get_job(self, worker, update_status):
-    worker.future = self.download_executor.submit(self.fetch_new_job, update_status, worker)
+    worker.future = self.download_executor.submit(self.download_job, update_status, worker)
     try:
       return worker.future.result()
     except:

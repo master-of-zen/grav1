@@ -20,20 +20,21 @@ class Projects:
     self.actions = actions
 
     self.action_queue = []
-    self.action_lock = Event()
+    self.action_event = Event()
     Thread(target=self.action_loop, daemon=True).start()
-    
+
     self.telemetry = {"encodes": [], "fph": 0, "fph_time": 0}
 
     self.projects_lock = Lock()
+    self.save_lock = Lock()
 
   def action_loop(self):
-    while self.action_lock.wait():
+    while self.action_event.wait():
       while len(self.action_queue) > 0:
         self.action_queue.pop(0)()
         self.save_projects()
 
-      self.action_lock.clear()
+      self.action_event.clear()
 
   def values(self):
     return self.projects.values()
@@ -42,7 +43,8 @@ class Projects:
     self.action_queue.append(action)
 
     if len(self.action_queue) > 0:
-      self.action_lock.set()
+      self.action_event.set()
+
 
   def project_on_complete(self, project):
     self.add_action(lambda: actions[project.action](self, project))
@@ -56,6 +58,7 @@ class Projects:
       project.on_complete = self.project_on_complete
 
     self.projects[project.projectid] = project
+    
     if save:
       self.save_projects()
 
@@ -184,26 +187,27 @@ class Projects:
     self.save_projects()
 
   def save_projects(self):
-    os.makedirs(os.path.join(self.working_dir, "scenes"), exist_ok=True)
+    with self.save_lock:
+      os.makedirs(os.path.join(self.working_dir, "scenes"), exist_ok=True)
     
-    dict_projects = {}
-    for project in self.projects.values():
-      dict_projects[project.projectid] = {
-        "priority": project.priority,
-        "path_in": project.path_in,
-        "encoder_params": project.encoder_params,
-        "ffmpeg_params": project.ffmpeg_params,
-        "min_frames": project.min_frames,
-        "max_frames": project.max_frames,
-        "encoder": project.encoder,
-        "input_frames": project.input_total_frames,
-        "on_complete": project.action,
-        "grain": project.grain
-      }
-      json.dump(project.scenes, open(os.path.join(self.path_scenes, f"{project.projectid}.json"), "w+"), indent=2)
-    
-    json.dump(dict_projects, open(self.path_projects, "w+"), indent=2)
-    json.dump(self.userstats, open("stats.json", "w+"), indent=2)
+      dict_projects = {}
+      for project in self.projects.values():
+        dict_projects[project.projectid] = {
+          "priority": project.priority,
+          "path_in": project.path_in,
+          "encoder_params": project.encoder_params,
+          "ffmpeg_params": project.ffmpeg_params,
+          "min_frames": project.min_frames,
+          "max_frames": project.max_frames,
+          "encoder": project.encoder,
+          "input_frames": project.input_total_frames,
+          "on_complete": project.action,
+          "grain": project.grain
+        }
+        json.dump(project.scenes, open(os.path.join(self.path_scenes, f"{project.projectid}.json"), "w+"), indent=2)
+      
+      json.dump(dict_projects, open(self.path_projects, "w+"), indent=2)
+      json.dump(self.userstats, open("stats.json", "w+"), indent=2)
 
   def load_projects(self):
     if not os.path.isfile("projects.json"): return

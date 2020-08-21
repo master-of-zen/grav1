@@ -207,7 +207,6 @@ class Projects:
         json.dump(project.scenes, open(os.path.join(self.path_scenes, f"{project.projectid}.json"), "w+"), indent=2)
       
       json.dump(dict_projects, open(self.path_projects, "w+"), indent=2)
-      json.dump(self.userstats, open("stats.json", "w+"), indent=2)
 
   def load_projects(self):
     if not os.path.isfile("projects.json"): return

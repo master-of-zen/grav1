@@ -44,11 +44,11 @@ class Logger(logging.Handler):
 
     self.save_event.set()
 
-NET = 11
+NET = 21
 
 def setup():
   logging.addLevelName(NET, "NET")
   
   root = logging.getLogger()
   root.addHandler(Logger())
-  root.setLevel(0)
+  root.setLevel(20)

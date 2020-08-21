@@ -5,7 +5,7 @@ from grav1ty.util import ffmpeg
 
 merge_out = "merged"
 
-AUTO = 13
+AUTO = 23
 logging.addLevelName(AUTO, "AUTO")
 
 def merge(projects, project):

@@ -1,9 +1,9 @@
-import os, json, time, subprocess, re, logging
+import os, json, time, subprocess, re, logging, shutil
 from threading import Thread, Event, Lock
 
 from grav1ty.split import split, verify_split
 from grav1ty.util import ffmpeg, get_frames
-from util import tmp_file
+from util import tmp_file, tmp_save
 
 from actions import actions
 
@@ -16,6 +16,7 @@ class Projects:
     self.path_projects = os.path.join(working_dir, "projects.json")
     self.path_scenes = os.path.join(working_dir, "scenes")
     self.path_jobs = os.path.join(working_dir, "jobs")
+    self.path_checking = os.path.join(working_dir, "checking")
 
     self.actions = actions
 
@@ -44,7 +45,6 @@ class Projects:
 
     if len(self.action_queue) > 0:
       self.action_event.set()
-
 
   def project_on_complete(self, project):
     self.add_action(lambda: actions[project.action](self, project))
@@ -114,46 +114,46 @@ class Projects:
       self.remove_worker(job, client)
       return "bad params"
 
-    encoded = os.path.join(project.path_encode, job.encoded_filename)
-
     if scene["filesize"] > 0:
       logging.log(NET, "discard from", client, projectid, scene_number, "already done")
       self.remove_worker(job, client)
       return "already done"
 
-    os.makedirs(project.path_encode, exist_ok=True)
-    file.save(encoded)
-    
-    if os.stat(encoded).st_size == 0:
-      logging.log(NET, "discard from", client, projectid, scene_number, "bad upload")
-      self.remove_worker(job, client)
-      return "bad upload"
-    
-    if job.encoder == "aom":
-      dav1d = subprocess.run([
-        "dav1d",
-        "-i", encoded,
-        "-o", "/dev/null",
-        "--framethreads", "1",
-        "--tilethreads", "16"
-      ], capture_output=True)
-
-      if dav1d.returncode == 1:
-        logging.log(NET, "discard from", client, projectid, scene_number, "dav1d decode error")
+    os.makedirs(self.path_checking, exist_ok=True)
+    with tmp_save(file, self.path_checking, suffix=job.encoded_filename) as tmp_enc:
+      if os.stat(tmp_enc).st_size == 0:
+        logging.log(NET, "discard from", client, projectid, scene_number, "bad upload")
         self.remove_worker(job, client)
-        return "bad encode"
+        return "bad upload"
       
-      encoded_frames = int(re.search(r"Decoded [0-9]+/([0-9]+) frames", dav1d.stdout.decode("utf-8") + dav1d.stderr.decode("utf-8")).group(1))
-    else:
-      encoded_frames = get_frames(encoded)
+      if job.encoder == "aom":
+        dav1d = subprocess.run([
+          "dav1d",
+          "-i", tmp_enc,
+          "-o", "/dev/null",
+          "--framethreads", "1",
+          "--tilethreads", "16"
+        ], capture_output=True)
 
-    if scene["frames"] != encoded_frames:
-      os.remove(encoded)
-      logging.log(NET, "discard from", client, projectid, scene_number, "frame mismatch", encoded_frames, "/", scene["frames"])
-      self.remove_worker(job, client)
-      return "frame mismatch"
+        if dav1d.returncode == 1:
+          logging.log(NET, "discard from", client, projectid, scene_number, "dav1d decode error")
+          self.remove_worker(job, client)
+          return "bad encode"
+        
+        encoded_frames = int(re.search(r"Decoded [0-9]+/([0-9]+) frames", dav1d.stdout.decode("utf-8") + dav1d.stderr.decode("utf-8")).group(1))
+      else:
+        encoded_frames = get_frames(tmp_enc)
 
-    scene["filesize"] = os.stat(encoded).st_size
+      if scene["frames"] != encoded_frames:
+        logging.log(NET, "discard from", client, projectid, scene_number, "frame mismatch", encoded_frames, "/", scene["frames"])
+        self.remove_worker(job, client)
+        return "frame mismatch"
+
+      scene["filesize"] = os.stat(tmp_enc).st_size
+
+      os.makedirs(project.path_encode, exist_ok=True)
+      encoded = os.path.join(project.path_encode, job.encoded_filename)
+      shutil.copyfile(tmp_enc, encoded)
 
     with self.projects_lock:
       if client in job.workers:

@@ -225,6 +225,8 @@ class Client:
   def download_job(self, update_status, worker=None):
     job = self.fetch_new_job(update_status, worker)
     if job:
+      if worker:
+        worker.job = job
       return job
     for i in range(15):
       if self.stopping or worker and worker.stopped: return None

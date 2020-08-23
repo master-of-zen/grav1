@@ -190,6 +190,7 @@ class Client:
     self.job_queue = deque()
     self.job_queue_lock = Lock()
     self.job_queue_not_empty = Condition(self.job_queue_lock)
+    self.job_queue_ret_lock = Lock()
 
     self.download_status = ""
     self.download_timer = Event()
@@ -207,10 +208,11 @@ class Client:
   def _download_loop(self):
     while True:
       if len(self.job_queue) < self.job_queue_size:
-        job = self.download_job(self._update_download_status)
-        if job:
-          self._add_job_to_queue(job)
-          self.refresh_screen()
+        with self.job_queue_ret_lock:
+          job = self.download_job(self._update_download_status)
+          if job:
+            self._add_job_to_queue(job)
+            self.refresh_screen()
       else:
         self.download_status = ""
         self.download_event.wait()
@@ -260,7 +262,8 @@ class Client:
 
   def get_job(self, worker, update_status):
     if self.job_queue_size > 0:
-      return self._get_job_from_queue(worker), True
+      with self.job_queue_ret_lock:
+        return self._get_job_from_queue(worker), True
     else:
       return self._get_job(worker, update_status), False
     

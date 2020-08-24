@@ -260,7 +260,7 @@ def add_project():
       logging.log(NET, "add project", input_file)
 
       if "id" in content and content["id"]:
-        if len(content["input"]) > 0:
+        if len(content["input"]) > 1:
           id = f"{content['id']}{i:02d}"
         else:
           id = content["id"]

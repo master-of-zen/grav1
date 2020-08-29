@@ -291,36 +291,41 @@ class Client:
 
       self.upload_queue_event.clear()
       
-      job, output = self.upload_queue.popleft()
-      self.uploading = job
+      try:
+        job, output = self.upload_queue.popleft()
+        self.uploading = job
 
-      uploads = 3
-      while True:
-        r = self._upload(job, output)
-        
-        if r:
-          if r.text == "saved":
-            self.completed += 1
-            break
-          elif r.text == "bad upload" and uploads > 0:
-            if self.args.noui:
-              print("bad upload", "retrying", job.projectid, job.scene)
-            uploads -= 1
-            time.sleep(1)
+        uploads = 3
+        fails = 0
+        while uploads > 0 and fails < 10:
+          r = self._upload(job, output)
+          
+          if r:
+            if r.text == "saved":
+              self.completed += 1
+              break
+            elif r.text == "bad upload":
+              if self.args.noui:
+                print("bad upload", "retrying", job.projectid, job.scene)
+              uploads -= 1
+            else:
+              if self.args.noui:
+                print("failed", r.status_code, r.text, job.projectid, job.scene)
+              fails += 1
           else:
             if self.args.noui:
-              print("failed", r.status_code, r.text, job.projectid, job.scene)
-            self.failed += 1
-            break
-        else:
-          if self.args.noui:
-            print("unable to connect, trying again")
+              print("unable to connect, trying again")
+            fails += 1
           time.sleep(1)
-      
-      if os.path.exists(output):
-        try:
-          os.remove(output)
-        except: pass
+
+        if fails >= 10:
+          self.failed += 1
+        
+        if os.path.exists(output):
+          try:
+            os.remove(output)
+          except: pass
+      except: pass
 
       self.uploading = None
       self.refresh_screen()
@@ -331,28 +336,26 @@ class Client:
     self.refresh_screen()
 
   def _upload(self, job, output):
-    file = open(output, "rb")
-    files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
     try:
-      if self.args.noui:
-        print("uploading to", f"{self.args.target}/finish_job")
-      return self.session.post(
-        f"{self.args.target}/finish_job",
-        data={
-          "client": job.id,
-          "scene": job.scene,
-          "projectid": job.projectid,
-          "encoder": job.encoder,
-          "version": encoder_versions[job.encoder],
-          "encoder_params": job.encoder_params,
-          "ffmpeg_params": job.ffmpeg_params,
-          "grain": int(len(job.grain) > 0)
-        },
-        files=files)
+      with open(output, "rb") as file:
+        files = [("file", (os.path.splitext(job.filename)[0] + os.path.splitext(output)[1], file, "application/octet"))]
+        if self.args.noui:
+          print("uploading to", f"{self.args.target}/finish_job")
+        return self.session.post(
+          f"{self.args.target}/finish_job",
+          data={
+            "client": job.id,
+            "scene": job.scene,
+            "projectid": job.projectid,
+            "encoder": job.encoder,
+            "version": encoder_versions[job.encoder],
+            "encoder_params": job.encoder_params,
+            "ffmpeg_params": job.ffmpeg_params,
+            "grain": int(len(job.grain) > 0)
+          },
+          files=files)
     except:
       return None
-    finally:
-      file.close()
 
   def fetch_grain_table(self, projectid, scene):
     for i in range(3):

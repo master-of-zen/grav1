@@ -1,6 +1,8 @@
 # grav1
 ## Distributed network av1 / vp9 encoder
 
+### This project is moving to elixir. It can be found [here](https://github.com/wwww-wwww/grav1_ex).
+
 [web client](https://encode.grass.moe)
 
 message me on the av1 discord if you're actually going to use this
